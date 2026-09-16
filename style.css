@@ -1,0 +1,249 @@
+/* ===========================================================
+   Style de l'application.
+   Écrit "mobile d'abord" : la mise en page est pensée pour un
+   téléphone, puis élargie sur PC (voir la règle @media tout en bas).
+   =========================================================== */
+
+:root {
+  --fond: #f4f6f7;
+  --carte: #ffffff;
+  --texte: #16232a;
+  --texte-doux: #5b6b74;
+  --bordure: #d8e0e4;
+  --accent: #123f4f;
+  --accent-clair: #e3edf1;
+  --vert: #1d7a4c;
+  --rouge: #b3261e;
+  --orange: #a2650a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  color: var(--texte);
+  background: var(--fond);
+  /* Place réservée en bas pour la barre d'onglets fixe. */
+  padding-bottom: 68px;
+}
+
+/* ---------- Barres haut et bas ---------- */
+
+#barre-haut {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--accent);
+  color: #fff;
+  padding: 12px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+#barre-haut h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
+
+#bouton-retour {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+#etat-hors-ligne { font-size: 12px; opacity: 0.85; }
+
+#barre-bas {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  display: flex;
+  background: var(--carte);
+  border-top: 1px solid var(--bordure);
+  z-index: 10;
+}
+
+.onglet {
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 14px 4px;
+  font-size: 13px;
+  color: var(--texte-doux);
+  cursor: pointer;
+}
+
+.onglet.actif { color: var(--accent); font-weight: 700; box-shadow: inset 0 3px 0 var(--accent); }
+
+/* ---------- Contenu ---------- */
+
+main { padding: 14px; max-width: 760px; margin: 0 auto; }
+
+h2 { font-size: 16px; margin: 22px 0 10px; }
+h2:first-child { margin-top: 4px; }
+
+p { line-height: 1.5; }
+
+.bloc {
+  background: var(--carte);
+  border: 1px solid var(--bordure);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.doux { color: var(--texte-doux); font-size: 14px; }
+.centre { text-align: center; }
+.rouge { color: var(--rouge); }
+.vert { color: var(--vert); }
+.orange { color: var(--orange); }
+
+/* ---------- Boutons et champs ---------- */
+
+button {
+  font-family: inherit;
+  font-size: 15px;
+}
+
+.bouton {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 16px;
+  cursor: pointer;
+}
+
+.bouton.secondaire { background: var(--accent-clair); color: var(--accent); }
+.bouton.danger { background: var(--rouge); }
+.bouton.large { display: block; width: 100%; text-align: center; margin-top: 8px; }
+.bouton:disabled { opacity: 0.45; cursor: default; }
+
+input[type="text"], input[type="date"], input[type="number"], textarea, select {
+  font-family: inherit;
+  font-size: 16px; /* 16px évite que le téléphone zoome automatiquement */
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--bordure);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--texte);
+}
+
+label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-doux); }
+
+/* ---------- Listes ---------- */
+
+.ligne {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--bordure);
+}
+.ligne:last-child { border-bottom: none; }
+.ligne .grandit { flex: 1; min-width: 0; }
+.ligne .titre-ligne { font-weight: 600; }
+
+.pastille {
+  display: inline-block;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-clair);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.pastille.alerte { background: #fbe9e7; color: var(--rouge); }
+.pastille.ok { background: #e4f2ea; color: var(--vert); }
+
+/* ---------- Écran de session ---------- */
+
+/* La question occupe le haut, la zone de réponse le reste :
+   c'est la disposition "25 % / 75 %" décidée au départ. */
+#zone-question {
+  background: var(--carte);
+  border: 1px solid var(--bordure);
+  border-radius: 10px;
+  padding: 16px;
+  min-height: 22vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+#zone-question .question { font-size: 18px; line-height: 1.45; white-space: pre-wrap; }
+
+#zone-reponse textarea { min-height: 34vh; resize: vertical; }
+
+.barre-progression {
+  height: 4px;
+  background: var(--bordure);
+  border-radius: 2px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.barre-progression div { height: 100%; background: var(--accent); }
+
+.boutons-confiance, .boutons-note { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin-top: 10px; }
+.boutons-confiance button, .boutons-note button {
+  padding: 14px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--bordure);
+  background: var(--carte);
+  cursor: pointer;
+  text-align: center;
+  line-height: 1.3;
+}
+.boutons-note button small, .boutons-confiance button small { display: block; color: var(--texte-doux); font-size: 12px; }
+.boutons-note button.suggeree { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-clair); }
+
+.element-cle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--bordure);
+}
+.element-cle input { width: 22px; height: 22px; margin-top: 2px; flex: none; }
+.element-cle:last-child { border-bottom: none; }
+
+.ma-reponse {
+  white-space: pre-wrap;
+  background: #fbfcfc;
+  border: 1px dashed var(--bordure);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 15px;
+}
+
+.avertissement {
+  background: #fbe9e7;
+  border: 1px solid #f3c4bf;
+  color: var(--rouge);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 10px 0;
+  font-size: 14px;
+}
+
+/* ---------- Petit histogramme des révisions à venir ---------- */
+
+.histogramme { display: flex; align-items: flex-end; gap: 6px; height: 90px; margin-top: 8px; }
+.histogramme .colonne { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.histogramme .barre { background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; }
+.histogramme .jour { font-size: 11px; text-align: center; color: var(--texte-doux); margin-top: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--bordure); }
+th { color: var(--texte-doux); font-weight: 600; }
+
+/* ---------- Écran large (PC) ---------- */
+
+@media (min-width: 720px) {
+  .boutons-note, .boutons-confiance { grid-template-columns: repeat(4, 1fr); }
+  #zone-reponse textarea { min-height: 26vh; }
+}
