@@ -129,12 +129,18 @@ const Sauvegarde = {
     let paquet = paquets.find(function (p) { return p.nom === nomVoulu; });
     let paquetCree = false;
     if (!paquet) {
+      const echeance = (donnees.paquet && donnees.paquet.echeance) || null;
+      const sectionFichier = donnees.paquet && donnees.paquet.section;
       paquet = {
         id: Donnees.nouvelId(),
         nom: nomVoulu,
         matiere: (donnees.paquet && donnees.paquet.matiere) || '',
-        echeance: (donnees.paquet && donnees.paquet.echeance) || null,
+        echeance: echeance,
+        // Section demandée par le fichier, sinon : Apprendre s'il y a une date, Comprendre sinon.
+        section: Planification.SECTIONS[sectionFichier] ? sectionFichier : (echeance ? 'apprendre' : 'comprendre'),
+        retentionEntretien: Planification.RETENTION_ENTRETIEN_DEFAUT,
         retentionCible: null,
+        archive: false,
         creeLe: maintenant,
         modifieLe: maintenant
       };
@@ -149,15 +155,37 @@ const Sauvegarde = {
     // On évite les doublons si le même fichier est importé deux fois.
     const existantes = (await Donnees.tous('cartes')).filter(function (c) { return c.paquetId === paquet.id; });
     const questionsConnues = {};
-    existantes.forEach(function (c) { questionsConnues[c.question.trim()] = true; });
+    existantes.forEach(function (c) { questionsConnues[c.question.trim()] = c; });
+
+    // Un marquage n'est enregistré que s'il est vraiment dans le fichier
+    // (true ou false). Absent = on ne décide rien, la carte reste en jeu.
+    const marquage = function (valeur) { return typeof valeur === 'boolean' ? valeur : undefined; };
 
     const nouvelles = [];
+    const misesAJour = [];
     let ignorees = 0;
-    donnees.cartes.forEach(function (source) {
+    donnees.cartes.forEach(function (source, position) {
       const question = String(source.question || '').trim();
       if (!question) return;
-      if (questionsConnues[question]) { ignorees++; return; }
-      questionsConnues[question] = true;
+      const dejaLa = questionsConnues[question];
+      if (dejaLa === 'dans-ce-fichier') { ignorees++; return; }   // doublon à l'intérieur du fichier
+      if (dejaLa) {
+        // Carte déjà importée : on ne touche ni à son contenu (tu as pu le
+        // corriger) ni à son historique. On complète seulement les marquages
+        // qui lui manquent — c'est ce qui permet de marquer après coup des
+        // cartes importées avant l'existence des sections.
+        let modifiee = false;
+        ['comprendre', 'essentiel'].forEach(function (champ) {
+          if (dejaLa[champ] === undefined && marquage(source[champ]) !== undefined) {
+            dejaLa[champ] = source[champ];
+            modifiee = true;
+          }
+        });
+        if (modifiee) { dejaLa.modifieLe = maintenant; misesAJour.push(dejaLa); }
+        else ignorees++;
+        return;
+      }
+      questionsConnues[question] = 'dans-ce-fichier';
       nouvelles.push({
         id: Donnees.nouvelId(),
         paquetId: paquet.id,
@@ -168,15 +196,21 @@ const Sauvegarde = {
         exemples: Array.isArray(source.exemples) ? source.exemples.filter(Boolean) : [],
         maFormulation: '',
         surPapier: !!source.surPapier,
+        comprendre: marquage(source.comprendre),   // en jeu dès la section Comprendre ?
+        essentiel: marquage(source.essentiel),     // gardée en section Entretenir ?
         source: source.source || '',
         statut: 'brouillon',          // à valider avant d'entrer en révision
         etat: null,
+        ordre: position,              // pour introduire les cartes dans l'ordre du cours
         creeLe: maintenant,
         modifieLe: maintenant
       });
     });
-    await Donnees.ecrirePlusieurs('cartes', nouvelles);
-    return { paquet: paquet, ajoutees: nouvelles.length, ignorees: ignorees, paquetCree: paquetCree };
+    await Donnees.ecrirePlusieurs('cartes', nouvelles.concat(misesAJour));
+    return {
+      paquet: paquet, ajoutees: nouvelles.length, misesAJour: misesAJour.length,
+      ignorees: ignorees, paquetCree: paquetCree
+    };
   },
 
   // ---------- Lecture d'un fichier choisi par l'utilisateur ----------

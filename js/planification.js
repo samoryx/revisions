@@ -8,8 +8,10 @@
    et on retombe forcément sur le même résultat des deux côtés.
 
    Règles ajoutées par-dessus FSRS :
-   - jamais plus loin que l'échéance du paquet (contrôle, bac…) ;
-   - jamais plus loin que le plafond réglable (contrôles surprises) ;
+   - chaque paquet est dans une SECTION (Comprendre, Apprendre,
+     Entretenir) qui décide quelles cartes sont en jeu, à quel
+     rythme, et dans quel ordre elles passent ;
+   - la dernière révision avant une échéance tombe la VEILLE ;
    - petit décalage aléatoire pour éviter que 40 cartes créées le
      même jour reviennent toutes ensemble pour toujours ;
    - une carte est "acquise" après 3 rappels réussis des jours
@@ -20,7 +22,109 @@ const Planification = {
 
   REUSSITES_POUR_ACQUISE: 3,
 
-  // --- Outils de date. Tout est stocké en "AAAA-MM-JJ". ---
+  // ---------- Les trois sections ----------
+  //
+  // Ce sont les étapes de la vie d'un chapitre :
+  // Comprendre (cours en cours) → Apprendre (contrôle en vue)
+  // → Entretenir (contrôle passé, à garder) → Apprendre (bac) → …
+  //
+  // "priorite" : ordre de passage en session (1 passe en premier).
+  // La priorité 1 est réservée aux paquets urgents.
+
+  SECTIONS: {
+    comprendre: {
+      nom: 'Comprendre',
+      priorite: 3,
+      description: 'Chapitre en cours. Seules les cartes de compréhension et de méthode sont en jeu ; les détails à apprendre par cœur attendent la section Apprendre.'
+    },
+    apprendre: {
+      nom: 'Apprendre',
+      priorite: 2,
+      description: 'Contrôle en vue. Toutes les cartes sont en jeu. Les nouvelles arrivent assez tôt pour être espacées, et la dernière révision tombe la veille du contrôle.'
+    },
+    entretenir: {
+      nom: 'Entretenir',
+      priorite: 4,
+      description: 'Contrôle passé, à garder. Seules les cartes essentielles restent en jeu, avec des intervalles plus longs. Elles passent en dernier : un retard de quelques jours leur coûte très peu.'
+    }
+  },
+
+  JOURS_URGENCE: 7,                  // "urgent" = contrôle dans 7 jours ou moins
+  RETENTION_ENTRETIEN_DEFAUT: 0.85,
+  INTERVALLE_MAX_ENTRETIEN: 180,
+  JOURS_RETOUR_APPRENDRE: 30,        // suggérer Apprendre 30 jours avant une échéance
+
+  // Section d'un paquet. Les paquets créés avant l'existence des sections
+  // en reçoivent une d'après leur échéance.
+  sectionDe: function (paquet) {
+    if (paquet && this.SECTIONS[paquet.section]) return paquet.section;
+    return (paquet && paquet.echeance) ? 'apprendre' : 'comprendre';
+  },
+
+  /* Une carte participe-t-elle aux révisions dans la section actuelle ?
+     Un marquage absent compte comme "oui" : on ne cache jamais une carte
+     par accident. */
+  carteEnJeu: function (carte, paquet) {
+    if (carte.statut !== 'active') return false;
+    const section = this.sectionDe(paquet);
+    if (section === 'comprendre') return carte.comprendre !== false;
+    if (section === 'entretenir') return carte.essentiel !== false;
+    return true;
+  },
+
+  retentionPour: function (paquet, reglages) {
+    if (this.sectionDe(paquet) === 'entretenir') {
+      return paquet.retentionEntretien || this.RETENTION_ENTRETIEN_DEFAUT;
+    }
+    return (paquet && paquet.retentionCible) || reglages.retentionCible;
+  },
+
+  intervalleMaxPour: function (paquet, reglages) {
+    if (this.sectionDe(paquet) === 'entretenir') {
+      return Math.max(reglages.intervalleMaxJours, this.INTERVALLE_MAX_ENTRETIEN);
+    }
+    return reglages.intervalleMaxJours;
+  },
+
+  joursAvantEcheance: function (paquet, jour) {
+    if (!paquet || !paquet.echeance) return null;
+    return this.differenceEnJours(jour, paquet.echeance);
+  },
+
+  estUrgent: function (paquet, jour) {
+    if (!paquet || paquet.archive || this.sectionDe(paquet) !== 'apprendre') return false;
+    const restant = this.joursAvantEcheance(paquet, jour);
+    return restant !== null && restant >= 0 && restant <= this.JOURS_URGENCE;
+  },
+
+  priorite: function (paquet, jour) {
+    if (this.estUrgent(paquet, jour)) return 1;
+    return this.SECTIONS[this.sectionDe(paquet)].priorite;
+  },
+
+  /* Changement de section à proposer (c'est toujours toi qui décides).
+     Renvoie null s'il n'y a rien à proposer, ou si tu as déjà ignoré
+     cette proposition. */
+  suggestionPour: function (paquet, jour) {
+    if (!paquet || paquet.archive) return null;
+    const section = this.sectionDe(paquet);
+    const restant = this.joursAvantEcheance(paquet, jour);
+    if (restant === null) return null;
+
+    let suggestion = null;
+    if (section === 'comprendre' && restant >= 0) {
+      suggestion = { type: 'vers-apprendre', restant: restant };
+    } else if (section === 'apprendre' && restant < 0) {
+      suggestion = { type: 'apres-controle', restant: restant };
+    } else if (section === 'entretenir' && restant >= 0 && restant <= this.JOURS_RETOUR_APPRENDRE) {
+      suggestion = { type: 'retour-apprendre', restant: restant };
+    }
+    if (!suggestion) return null;
+    suggestion.cle = suggestion.type + '@' + paquet.echeance;
+    return paquet.suggestionIgnoree === suggestion.cle ? null : suggestion;
+  },
+
+  // ---------- Outils de date. Tout est stocké en "AAAA-MM-JJ". ----------
 
   jourAujourdhui: function () {
     const maintenant = new Date();
@@ -119,34 +223,23 @@ const Planification = {
 
   /* Nombre de jours avant la prochaine révision, plafonds compris. */
   calculerIntervalle: function (stabilite, jour, paquet, reglages, graine) {
-    const cible = (paquet && paquet.retentionCible) ? paquet.retentionCible : reglages.retentionCible;
-    let jours = FSRS.intervalle(stabilite, cible);
+    let jours = FSRS.intervalle(stabilite, this.retentionPour(paquet, reglages));
     jours = Math.max(1, Math.round(jours));
-    jours = Math.min(jours, reglages.intervalleMaxJours);
     // graine absente = simple aperçu affiché sur un bouton : pas de décalage,
     // sinon le nombre annoncé ne serait pas celui qui sera enregistré.
     if (graine) jours = this.appliquerDecalage(jours, graine);
+    // Le plafond s'applique APRÈS le décalage, pour ne jamais être dépassé.
+    jours = Math.min(jours, this.intervalleMaxPour(paquet, reglages));
 
-    // Plafond d'échéance : si le paquet a une date (contrôle, bac), on ne
-    // saute jamais par-dessus. Une fois l'échéance passée, le plafond ne
-    // s'applique plus — c'est à toi de décider si tu continues le paquet.
+    // Échéance : on ne saute jamais par-dessus, et la dernière révision
+    // tombe la VEILLE (le jour même serait trop tard pour un contrôle à 8 h).
+    // Une révision faite la veille n'est pas ramenée au jour J : inutile.
+    // Une fois l'échéance passée, ce plafond ne s'applique plus.
     if (paquet && paquet.echeance) {
       const restant = this.differenceEnJours(jour, paquet.echeance);
-      if (restant > 0) jours = Math.min(jours, restant);
+      if (restant >= 2) jours = Math.min(jours, restant - 1);
     }
     return Math.max(1, jours);
-  },
-
-  /* Simule les 4 notes possibles pour afficher "→ dans X jours" sur les boutons. */
-  apercuDesNotes: function (etatActuel, dernierJour, paquet, reglages) {
-    const aujourdHui = this.jourAujourdhui();
-    const joursEcoules = (etatActuel && dernierJour) ? this.differenceEnJours(dernierJour, aujourdHui) : 0;
-    const apercu = {};
-    for (let note = 1; note <= 4; note++) {
-      const memoire = FSRS.prochainEtat(etatActuel, joursEcoules, note);
-      apercu[note] = this.calculerIntervalle(memoire.stabilite, aujourdHui, paquet, reglages, 'apercu');
-    }
-    return apercu;
   },
 
   estDue: function (carte, jour) {
@@ -158,11 +251,96 @@ const Planification = {
     return !!(carte.etat && carte.etat.echecs >= reglages.seuilSangsue);
   },
 
+  // Ordre d'introduction des nouvelles cartes : celui du cours.
+  ordreDuCours: function (a, b) {
+    if ((a.creeLe || '') !== (b.creeLe || '')) return (a.creeLe || '') < (b.creeLe || '') ? -1 : 1;
+    return (a.ordre || 0) - (b.ordre || 0);
+  },
+
+  /* Les cartes à passer aujourd'hui : les cartes dues + les nouvelles
+     autorisées. L'accueil ET la session utilisent cette même fonction,
+     pour annoncer toujours la même chose.
+
+     Nouvelles cartes :
+     - paquet en Apprendre avec une date : quota calculé pour que toutes
+       ses cartes soient vues au plus tard 2 jours avant le contrôle
+       (sinon elles n'auraient pas le temps d'être espacées) ;
+     - tous les autres : se partagent la limite quotidienne des réglages,
+       par ordre de priorité. */
+  selectionDuJour: function (cartes, paquets, reglages, jour, paquetsChoisis) {
+    const parId = {};
+    paquets.forEach(p => { parId[p.id] = p; });
+
+    const enJeu = {};
+    paquets.forEach(p => { if (!p.archive) enJeu[p.id] = []; });
+    cartes.forEach(c => {
+      const p = parId[c.paquetId];
+      if (p && !p.archive && this.carteEnJeu(c, p)) enJeu[p.id].push(c);
+    });
+
+    const choisi = p => !paquetsChoisis || paquetsChoisis.indexOf(p.id) !== -1;
+    const dues = [];
+    const nouvelles = [];
+    const reserve = [];                 // paquets qui puisent dans la limite quotidienne
+    let introduitesSurLaLimite = 0;
+
+    paquets.forEach(p => {
+      if (p.archive) return;
+      const liste = enJeu[p.id];
+      const introduites = liste.filter(c => c.etat && c.etat.nbRevisions === 1 && c.etat.dernierJour === jour).length;
+      const jamaisVues = liste.filter(c => !c.etat).sort(this.ordreDuCours);
+      const restant = this.joursAvantEcheance(p, jour);
+      const quotaPropre = this.sectionDe(p) === 'apprendre' && restant !== null && restant >= 1;
+
+      if (quotaPropre) {
+        if (choisi(p)) {
+          const joursDisponibles = Math.max(1, restant - 2);
+          const quota = Math.ceil((jamaisVues.length + introduites) / joursDisponibles) - introduites;
+          nouvelles.push(...jamaisVues.slice(0, Math.max(0, quota)));
+        }
+      } else {
+        introduitesSurLaLimite += introduites;
+        if (choisi(p)) reserve.push({ paquet: p, jamaisVues: jamaisVues });
+      }
+      if (choisi(p)) dues.push(...liste.filter(c => this.estDue(c, jour)));
+    });
+
+    // Partage de la limite quotidienne : par priorité d'abord ; entre paquets
+    // de même priorité, à tour de rôle (une carte chacun, puis on recommence),
+    // pour ne pas tout donner au premier paquet de la liste.
+    let places = Math.max(0, reglages.nouvellesParJour - introduitesSurLaLimite);
+    const niveaux = {};
+    reserve.forEach(r => {
+      const niveau = this.priorite(r.paquet, jour);
+      if (!niveaux[niveau]) niveaux[niveau] = [];
+      niveaux[niveau].push(r.jamaisVues.slice());
+    });
+    Object.keys(niveaux).map(Number).sort((a, b) => a - b).forEach(niveau => {
+      const files = niveaux[niveau];
+      while (places > 0 && files.some(f => f.length > 0)) {
+        files.forEach(f => {
+          if (places > 0 && f.length > 0) { nouvelles.push(f.shift()); places--; }
+        });
+      }
+    });
+
+    return { dues: dues, nouvelles: nouvelles, total: dues.length + nouvelles.length };
+  },
+
   /* Recalcule et enregistre l'état d'une carte à partir du journal. */
   rafraichirCarte: async function (carte, paquet, reglages) {
     const revisions = await Donnees.revisionsDeLaCarte(carte.id);
     carte.etat = this.etatDepuisJournal(revisions, paquet, reglages);
     await Donnees.ecrire('cartes', carte);
     return carte;
+  },
+
+  /* Recalcule toutes les cartes d'un paquet (après un changement de
+     section, de rétention ou d'échéance). */
+  rafraichirPaquet: async function (paquet, reglages) {
+    const cartes = (await Donnees.tous('cartes')).filter(c => c.paquetId === paquet.id && c.etat);
+    for (const carte of cartes) {
+      await this.rafraichirCarte(carte, paquet, reglages);
+    }
   }
 };

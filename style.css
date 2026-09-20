@@ -160,6 +160,71 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 .pastille.alerte { background: #fbe9e7; color: var(--rouge); }
 .pastille.ok { background: #e4f2ea; color: var(--vert); }
 
+/* ---------- Sections et urgence ---------- */
+
+/* Paquet urgent : cadre rouge + point qui pulse. */
+.bloc.urgent {
+  border: 2px solid var(--rouge);
+  background: #fff6f5;
+}
+
+.etiquette-urgent {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--rouge);
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.point-urgent {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--rouge);
+  animation: pulsation 1.4s ease-in-out infinite;
+}
+
+@keyframes pulsation {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.7); opacity: 0.35; }
+}
+
+/* Respecte le réglage "réduire les animations" du téléphone. */
+@media (prefers-reduced-motion: reduce) {
+  .point-urgent { animation: none; }
+}
+
+.bouton-urgent { background: var(--rouge); }
+
+/* Boutons côte à côte, un seul actif (choix de section, de rétention). */
+.segments {
+  display: flex;
+  border: 1px solid var(--bordure);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+.segments button {
+  flex: 1;
+  border: none;
+  border-right: 1px solid var(--bordure);
+  background: var(--carte);
+  color: var(--texte);
+  padding: 11px 4px;
+  cursor: pointer;
+}
+.segments button:last-child { border-right: none; }
+.segments button.actif { background: var(--accent); color: #fff; font-weight: 600; }
+
+.rangee-boutons { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.pastille.section-apprendre { background: #fdeee0; color: var(--orange); }
+.pastille.section-comprendre { background: var(--accent-clair); color: var(--accent); }
+.pastille.section-entretenir { background: #e4f2ea; color: var(--vert); }
+
 /* ---------- Écran de session ---------- */
 
 /* La question occupe le haut, la zone de réponse le reste :

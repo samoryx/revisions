@@ -38,7 +38,40 @@ const App = {
     });
     document.getElementById('bouton-retour').addEventListener('click', () => this.retour());
 
+    await this.mettreANiveau();
     await this.aller('accueil', {}, true);
+  },
+
+  /* Adapte les données créées par une version précédente de l'app.
+     Ne s'exécute qu'une fois par appareil. */
+  async mettreANiveau() {
+    const reglages = await Donnees.reglages();
+    if ((reglages.versionDonnees || 1) >= 2) return;
+    // Version 2 : les sections. Chaque paquet reçoit la sienne, puis toutes
+    // les dates sont recalculées (la dernière révision avant une échéance
+    // tombe désormais la veille, et non plus le jour même).
+    const paquets = await Donnees.tous('paquets');
+    for (const paquet of paquets) {
+      if (!paquet.section) {
+        paquet.section = Planification.sectionDe(paquet);
+        paquet.retentionEntretien = Planification.RETENTION_ENTRETIEN_DEFAUT;
+        paquet.modifieLe = new Date().toISOString();
+        await Donnees.ecrire('paquets', paquet);
+      }
+      await Planification.rafraichirPaquet(paquet, reglages);
+    }
+    await Donnees.majReglages({ versionDonnees: 2 });
+  },
+
+  /* Change la section d'un paquet et recalcule ses cartes. */
+  async changerSection(paquetId, section) {
+    const paquet = await Donnees.lire('paquets', paquetId);
+    paquet.section = section;
+    // À chaque entrée en Entretenir, la rétention repart à 85 %.
+    if (section === 'entretenir') paquet.retentionEntretien = Planification.RETENTION_ENTRETIEN_DEFAUT;
+    paquet.modifieLe = new Date().toISOString();
+    await Donnees.ecrire('paquets', paquet);
+    await Planification.rafraichirPaquet(paquet, await Donnees.reglages());
   },
 
   // ---------- Navigation ----------
@@ -101,14 +134,28 @@ const App = {
     const paquets = await Donnees.tous('paquets');
     const cartes = await Donnees.tous('cartes');
 
+    const selection = Planification.selectionDuJour(cartes, paquets, reglages, jour, null);
     const actives = cartes.filter(c => c.statut === 'active');
-    const dues = actives.filter(c => Planification.estDue(c, jour));
-    const nouvelles = actives.filter(c => !c.etat);
-    const dejaIntroduites = actives.filter(c => c.etat && c.etat.nbRevisions === 1 && c.etat.dernierJour === jour).length;
-    const nouvellesDuJour = Math.min(nouvelles.length, Math.max(0, reglages.nouvellesParJour - dejaIntroduites));
     const brouillons = cartes.filter(c => c.statut === 'brouillon');
     const sangsues = actives.filter(c => Planification.estSangsue(c, reglages));
-    const total = dues.length + nouvellesDuJour;
+    const total = selection.total;
+    const visibles = paquets.filter(p => !p.archive);
+
+    // Pour chaque paquet : sa part de la sélection du jour (les nombres
+    // s'additionnent et redonnent le total), et les cartes qui attendent leur tour.
+    const aFaire = {};
+    visibles.forEach(p => {
+      const jamaisVues = cartes.filter(c => c.paquetId === p.id && !c.etat && Planification.carteEnJeu(c, p)).length;
+      const nouvelles = selection.nouvelles.filter(c => c.paquetId === p.id).length;
+      aFaire[p.id] = {
+        dues: selection.dues.filter(c => c.paquetId === p.id).length,
+        nouvelles: nouvelles,
+        enAttente: jamaisVues - nouvelles,
+        // Réviser ce paquet seul peut lui donner des places que la sélection
+        // commune a données à un autre paquet : on le calcule à part.
+        seul: Planification.selectionDuJour(cartes, paquets, reglages, jour, [p.id]).total
+      };
+    });
 
     let html = '';
 
@@ -123,11 +170,27 @@ const App = {
       html += `<div class="bloc centre">
         <div style="font-size:42px;font-weight:700;line-height:1.1">${total}</div>
         <p class="doux">carte${total > 1 ? 's' : ''} à passer aujourd'hui<br>
-        ${dues.length} à revoir · ${nouvellesDuJour} nouvelle${nouvellesDuJour > 1 ? 's' : ''}</p>
+        ${selection.dues.length} à revoir · ${selection.nouvelles.length} nouvelle${selection.nouvelles.length > 1 ? 's' : ''}</p>
         <button class="bouton large" data-reviser="tout" ${total === 0 ? 'disabled' : ''}>
           ${total === 0 ? 'Rien à réviser maintenant' : 'Réviser'}
         </button>
       </div>`;
+    }
+
+    // Paquets urgents : en premier, le contrôle le plus proche d'abord.
+    visibles
+      .filter(p => Planification.estUrgent(p, jour))
+      .sort((a, b) => (a.echeance < b.echeance ? -1 : 1))
+      .forEach(p => { html += this.blocUrgent(p, aFaire[p.id], jour); });
+
+    // Changements de section proposés (c'est toi qui décides).
+    const suggestions = visibles
+      .map(p => ({ paquet: p, suggestion: Planification.suggestionPour(p, jour) }))
+      .filter(x => x.suggestion);
+    if (suggestions.length > 0) {
+      html += '<div class="bloc"><strong>Changement de section proposé</strong>';
+      suggestions.forEach(x => { html += this.ligneSuggestion(x.paquet, x.suggestion); });
+      html += '</div>';
     }
 
     if (brouillons.length > 0) {
@@ -146,23 +209,14 @@ const App = {
       </div>`;
     }
 
-    if (paquets.length > 0) {
-      html += '<h2>Paquets</h2><div class="bloc">';
-      paquets.forEach(paquet => {
-        const duPaquet = actives.filter(c => c.paquetId === paquet.id);
-        const dusIci = duPaquet.filter(c => Planification.estDue(c, jour)).length;
-        const nouvellesIci = duPaquet.filter(c => !c.etat).length;
-        const infoEcheance = paquet.echeance ? this.texteEcheance(paquet.echeance, jour) : '';
-        html += `<div class="ligne">
-          <div class="grandit">
-            <div class="titre-ligne">${this.h(paquet.nom)}</div>
-            <div class="doux">${dusIci} à revoir · ${nouvellesIci} nouvelle${nouvellesIci > 1 ? 's' : ''}${infoEcheance ? ' · ' + infoEcheance : ''}</div>
-          </div>
-          <button class="bouton secondaire" data-reviser="${paquet.id}" ${(dusIci + nouvellesIci) === 0 ? 'disabled' : ''}>Réviser</button>
-        </div>`;
-      });
+    // Les autres paquets, rangés par section, dans l'ordre de priorité.
+    ['apprendre', 'comprendre', 'entretenir'].forEach(section => {
+      const liste = visibles.filter(p => !Planification.estUrgent(p, jour) && Planification.sectionDe(p) === section);
+      if (liste.length === 0) return;
+      html += `<h2>${Planification.SECTIONS[section].nom}</h2><div class="bloc">`;
+      liste.forEach(p => { html += this.ligneAccueil(p, aFaire[p.id], jour); });
       html += '</div>';
-    }
+    });
 
     this.afficher('Aujourd\'hui', html);
     this.brancher('[data-va]', 'click', e => this.aller(e.currentTarget.dataset.va));
@@ -171,6 +225,82 @@ const App = {
       const cible = e.currentTarget.dataset.reviser;
       await this.lancerSession(cible === 'tout' ? null : [cible]);
     });
+    this.brancher('[data-changer-section]', 'click', async e => {
+      await this.changerSection(e.currentTarget.dataset.paquet, e.currentTarget.dataset.changerSection);
+      await this.rendre();
+    });
+    this.brancher('[data-archiver-paquet]', 'click', async e => {
+      const paquet = await Donnees.lire('paquets', e.currentTarget.dataset.archiverPaquet);
+      paquet.archive = true;
+      paquet.modifieLe = new Date().toISOString();
+      await Donnees.ecrire('paquets', paquet);
+      await this.rendre();
+    });
+    this.brancher('[data-ignorer]', 'click', async e => {
+      // On lit le bouton AVANT toute attente (await) : après, le navigateur
+      // a déjà oublié quel bouton a été cliqué.
+      const cle = e.currentTarget.dataset.ignorer;
+      const paquet = await Donnees.lire('paquets', e.currentTarget.dataset.paquet);
+      paquet.suggestionIgnoree = cle;
+      paquet.modifieLe = new Date().toISOString();
+      await Donnees.ecrire('paquets', paquet);
+      await this.rendre();
+    });
+  },
+
+  blocUrgent(paquet, aFaire, jour) {
+    const restant = Planification.joursAvantEcheance(paquet, jour);
+    const quand = restant === 0 ? 'contrôle aujourd\'hui'
+      : restant === 1 ? 'contrôle demain'
+      : 'contrôle dans ' + restant + ' jours';
+    return `<div class="bloc urgent">
+      <div class="etiquette-urgent"><span class="point-urgent"></span>Urgent · ${quand}</div>
+      <div class="titre-ligne" style="margin-top:6px">${this.h(paquet.nom)}</div>
+      <div class="doux">${Planification.jourLisible(paquet.echeance)} · ${this.texteCompteurs(aFaire)}</div>
+      ${aFaire.seul > 0
+        ? `<button class="bouton large bouton-urgent" data-reviser="${paquet.id}">Réviser ce paquet (${aFaire.seul})</button>`
+        : '<p class="vert" style="margin:8px 0 0">À jour pour aujourd\'hui.</p>'}
+    </div>`;
+  },
+
+  ligneAccueil(paquet, aFaire, jour) {
+    const echeance = paquet.echeance ? ' · ' + this.texteEcheance(paquet.echeance, jour) : '';
+    return `<div class="ligne">
+      <div class="grandit">
+        <div class="titre-ligne">${this.h(paquet.nom)}</div>
+        <div class="doux">${this.texteCompteurs(aFaire)}${echeance}</div>
+      </div>
+      <button class="bouton secondaire" data-reviser="${paquet.id}" ${aFaire.seul === 0 ? 'disabled' : ''}>Réviser</button>
+    </div>`;
+  },
+
+  texteCompteurs(aFaire) {
+    let texte = `${aFaire.dues} à revoir · ${aFaire.nouvelles} nouvelle${aFaire.nouvelles > 1 ? 's' : ''}`;
+    if (aFaire.enAttente > 0) texte += ` · ${aFaire.enAttente} en attente`;
+    return texte;
+  },
+
+  ligneSuggestion(paquet, suggestion) {
+    let texte = '';
+    let boutons = '';
+    if (suggestion.type === 'vers-apprendre') {
+      texte = suggestion.restant === 0 ? 'Contrôle aujourd\'hui : passer en Apprendre ?' : `Contrôle dans ${suggestion.restant} j : passer en Apprendre ?`;
+      boutons = `<button class="bouton" data-changer-section="apprendre" data-paquet="${paquet.id}">Passer en Apprendre</button>`;
+    } else if (suggestion.type === 'apres-controle') {
+      texte = 'Le contrôle est passé. Tu gardes ce chapitre, ou tu l\'archives ?';
+      boutons = `<button class="bouton" data-changer-section="entretenir" data-paquet="${paquet.id}">Entretenir</button>
+        <button class="bouton secondaire" data-archiver-paquet="${paquet.id}">Archiver</button>`;
+    } else {
+      texte = `Échéance dans ${suggestion.restant} j : repasser en Apprendre ?`;
+      boutons = `<button class="bouton" data-changer-section="apprendre" data-paquet="${paquet.id}">Passer en Apprendre</button>`;
+    }
+    return `<div class="ligne" style="display:block">
+      <div class="titre-ligne">${this.h(paquet.nom)}</div>
+      <p class="doux" style="margin:4px 0 8px">${texte}</p>
+      <div class="rangee-boutons">${boutons}
+        <button class="bouton secondaire" data-ignorer="${suggestion.cle}" data-paquet="${paquet.id}">Ignorer</button>
+      </div>
+    </div>`;
   },
 
   texteEcheance(echeance, jour) {
@@ -211,6 +341,7 @@ const App = {
             <div class="doux">${this.h(paquet.matiere || 'sans matière')} · ${duPaquet.length} carte${duPaquet.length > 1 ? 's' : ''}${paquet.echeance ? ' · échéance ' + Planification.jourLisible(paquet.echeance) : ''}</div>
           </div>
           ${brouillons > 0 ? `<span class="pastille alerte">${brouillons} à valider</span>` : ''}
+          <span class="pastille section-${Planification.sectionDe(paquet)}">${Planification.SECTIONS[Planification.sectionDe(paquet)].nom}</span>
           <span class="doux">›</span>
         </div>`;
       });
@@ -224,6 +355,7 @@ const App = {
       const maintenant = new Date().toISOString();
       const paquet = {
         id: Donnees.nouvelId(), nom: 'Nouveau paquet', matiere: '', echeance: null,
+        section: 'comprendre', retentionEntretien: Planification.RETENTION_ENTRETIEN_DEFAUT,
         retentionCible: null, archive: false, creeLe: maintenant, modifieLe: maintenant
       };
       await Donnees.ecrire('paquets', paquet);
@@ -243,15 +375,35 @@ const App = {
     const actives = cartes.filter(c => c.statut === 'active');
     const suspendues = cartes.filter(c => c.statut === 'suspendue');
     const acquises = actives.filter(c => c.etat && c.etat.acquise).length;
+    const section = Planification.sectionDe(paquet);
+    const enJeu = actives.filter(c => Planification.carteEnJeu(c, paquet)).length;
+    const retention = paquet.retentionEntretien || Planification.RETENTION_ENTRETIEN_DEFAUT;
 
     let html = `<div class="bloc">
+      <h2>Section</h2>
+      <div class="segments">
+        ${Object.keys(Planification.SECTIONS).map(cle =>
+          `<button data-section="${cle}" class="${cle === section ? 'actif' : ''}">${Planification.SECTIONS[cle].nom}</button>`).join('')}
+      </div>
+      <p class="doux">${Planification.SECTIONS[section].description}</p>
+      ${section === 'entretenir' ? `
+        <label>Rétention visée pour ce paquet</label>
+        <div class="segments">
+          ${[0.8, 0.85, 0.9].map(valeur =>
+            `<button data-retention="${valeur}" class="${Math.abs(valeur - retention) < 0.001 ? 'actif' : ''}">${Math.round(valeur * 100)} %</button>`).join('')}
+        </div>
+        <p class="doux">Par rapport à 90 %, les intervalles sont environ 1,9 fois plus longs à 85 %, et 3,3 fois plus longs à 80 %. Moins de révisions, mais davantage d'oublis à chaque passage.</p>` : ''}
+      <p><strong>${enJeu}</strong> carte${enJeu > 1 ? 's' : ''} en jeu sur ${actives.length} active${actives.length > 1 ? 's' : ''}.</p>
+    </div>
+
+    <div class="bloc">
       <label for="nom-paquet">Nom</label>
       <input type="text" id="nom-paquet" value="${this.h(paquet.nom)}">
       <label for="matiere-paquet">Matière</label>
       <input type="text" id="matiere-paquet" value="${this.h(paquet.matiere || '')}" placeholder="Physique-chimie, 2I2D, Philosophie…">
       <label for="echeance-paquet">Échéance (contrôle, bac…) — laisse vide si c'est du long terme</label>
       <input type="date" id="echeance-paquet" value="${paquet.echeance || ''}">
-      <p class="doux">Aucune révision ne sera planifiée après cette date : la dernière tombera avant.</p>
+      <p class="doux">Aucune révision ne sera planifiée après cette date : la dernière tombera la veille.</p>
       <button class="bouton" data-enregistrer-paquet="1">Enregistrer</button>
       <button class="bouton secondaire" data-archiver="1">${paquet.archive ? 'Réactiver' : 'Archiver'}</button>
     </div>
@@ -275,6 +427,7 @@ const App = {
         let etiquette = '';
         if (carte.statut === 'brouillon') etiquette = '<span class="pastille alerte">à valider</span>';
         else if (carte.statut === 'suspendue') etiquette = '<span class="pastille">suspendue</span>';
+        else if (!Planification.carteEnJeu(carte, paquet)) etiquette = '<span class="pastille">hors section</span>';
         else if (carte.etat && carte.etat.acquise) etiquette = '<span class="pastille ok">acquise</span>';
         else if (carte.etat) etiquette = `<span class="pastille">${Planification.jourLisible(carte.etat.dueLe)}</span>`;
         else etiquette = '<span class="pastille">nouvelle</span>';
@@ -314,6 +467,21 @@ const App = {
       await this.rendre();
     });
 
+    this.brancher('[data-section]', 'click', async e => {
+      const nouvelle = e.currentTarget.dataset.section;
+      if (nouvelle === section) return;
+      await this.changerSection(paquet.id, nouvelle);
+      await this.rendre();
+    });
+
+    this.brancher('[data-retention]', 'click', async e => {
+      paquet.retentionEntretien = Number(e.currentTarget.dataset.retention);
+      paquet.modifieLe = new Date().toISOString();
+      await Donnees.ecrire('paquets', paquet);
+      await Planification.rafraichirPaquet(paquet, await Donnees.reglages());
+      await this.rendre();
+    });
+
     this.brancher('[data-ouvrir-carte]', 'click', e => this.aller('carte', { carteId: e.currentTarget.dataset.ouvrirCarte }));
 
     this.brancher('[data-nouvelle-carte]', 'click', async () => {
@@ -321,8 +489,8 @@ const App = {
       const carte = {
         id: Donnees.nouvelId(), paquetId: paquet.id, type: 'rappel',
         question: '', elementsCles: [], reponse: '', exemples: [], maFormulation: '',
-        surPapier: false, source: '', statut: 'brouillon', etat: null,
-        creeLe: maintenant, modifieLe: maintenant
+        surPapier: false, comprendre: true, essentiel: true, source: '', statut: 'brouillon', etat: null,
+        ordre: cartes.length, creeLe: maintenant, modifieLe: maintenant
       };
       await Donnees.ecrire('cartes', carte);
       await this.aller('carte', { carteId: carte.id });
@@ -380,6 +548,8 @@ const App = {
       <textarea id="formulation-carte" rows="3" placeholder="La même idée avec tes mots à toi.">${this.h(carte.maFormulation || '')}</textarea>
 
       <label><input type="checkbox" id="papier-carte" ${carte.surPapier ? 'checked' : ''}> Répondre sur papier (pas de saisie au clavier)</label>
+      <label><input type="checkbox" id="comprendre-carte" ${carte.comprendre !== false ? 'checked' : ''}> Compréhension ou méthode : en jeu dès la section Comprendre</label>
+      <label><input type="checkbox" id="essentiel-carte" ${carte.essentiel !== false ? 'checked' : ''}> Essentielle : gardée en section Entretenir</label>
       ${carte.source ? `<p class="doux">Source : ${this.h(carte.source)}</p>` : ''}
       ${etatHtml}
     </div>
@@ -402,6 +572,8 @@ const App = {
       carte.exemples = document.getElementById('exemples-carte').value.split('\n').map(l => l.trim()).filter(Boolean);
       carte.maFormulation = document.getElementById('formulation-carte').value.trim();
       carte.surPapier = document.getElementById('papier-carte').checked;
+      carte.comprendre = document.getElementById('comprendre-carte').checked;
+      carte.essentiel = document.getElementById('essentiel-carte').checked;
       carte.modifieLe = new Date().toISOString();
     };
 
@@ -698,7 +870,9 @@ const App = {
     const html = `<div class="bloc">
       <h2>Importer des cartes</h2>
       <p class="doux">Le fichier .json préparé par Claude à partir de tes photos de cours. Les cartes arrivent en brouillon : tu les relis avant qu'elles entrent en révision.</p>
-      <input type="file" id="fichier-cartes" accept=".json,application/json">
+      <!-- Pas de filtre "accept" : le sélecteur de fichiers d'Android grise
+           parfois les .json quand on en met un. Mieux vaut tout afficher. -->
+      <input type="file" id="fichier-cartes">
       <label for="colle-cartes">…ou colle le contenu ici</label>
       <textarea id="colle-cartes" rows="5" placeholder='{"format":"cartes-v1", …}'></textarea>
       <button class="bouton large" data-importer-colle="1">Importer le texte collé</button>
@@ -712,6 +886,7 @@ const App = {
         const rapport = await Sauvegarde.importerCartes(donnees);
         zone.innerHTML = `<div class="bloc"><strong>${rapport.ajoutees} carte(s) importée(s)</strong>
           dans « ${this.h(rapport.paquet.nom) }»${rapport.paquetCree ? ' (paquet créé)' : ''}.
+          ${rapport.misesAJour > 0 ? rapport.misesAJour + ' déjà présente(s), marquage complété.' : ''}
           ${rapport.ignorees > 0 ? rapport.ignorees + ' déjà présente(s), ignorée(s).' : ''}
           <button class="bouton large" data-valider-brouillons="1">Relire les brouillons maintenant</button></div>`;
         this.brancher('[data-valider-brouillons]', 'click', () => this.ouvrirBrouillons());
@@ -744,8 +919,8 @@ const App = {
       <h2>Sauvegarde et transfert</h2>
       <p class="doux">Le fichier exporté contient tout : paquets, cartes et journal des révisions. Sur l'autre appareil, « Importer et fusionner » additionne les deux journaux sans rien écraser.</p>
       <button class="bouton large" data-exporter="1">Exporter une sauvegarde</button>
-      <label for="fichier-sauvegarde">Importer et fusionner une sauvegarde</label>
-      <input type="file" id="fichier-sauvegarde" accept=".json,application/json">
+      <label for="fichier-sauvegarde">Importer et fusionner une sauvegarde (fichier .json)</label>
+      <input type="file" id="fichier-sauvegarde">
       <div id="resultat-fusion"></div>
       <p class="doux">Dernière sauvegarde : ${reglages.derniereSauvegarde ? new Date(reglages.derniereSauvegarde).toLocaleString('fr-FR') : 'jamais'}</p>
     </div>
@@ -799,8 +974,16 @@ const App = {
       try {
         const donnees = await Sauvegarde.lireFichier(e.target.files[0]);
         const rapport = await Sauvegarde.fusionner(donnees);
+        // Cet appareil est maintenant le plus complet des deux : on propose
+        // tout de suite de renvoyer le résultat, sinon l'autre reste en retard.
         zone.innerHTML = `<div class="bloc">Fusion terminée : ${rapport.revisions} révision(s) ajoutée(s),
-          ${rapport.cartes} carte(s) mise(s) à jour, ${rapport.paquets} paquet(s), ${rapport.recalculees} carte(s) replanifiée(s).</div>`;
+          ${rapport.cartes} carte(s) mise(s) à jour, ${rapport.paquets} paquet(s), ${rapport.recalculees} carte(s) replanifiée(s).
+          <p class="doux">Cet appareil a maintenant tout l'historique des deux. L'autre, lui, ne connaît pas encore ce qui a été fait ici : renvoie-lui ce fichier pour qu'ils soient identiques.</p>
+          <button class="bouton large" id="renvoyer-fusion">Exporter pour l'autre appareil</button></div>`;
+        document.getElementById('renvoyer-fusion').addEventListener('click', async () => {
+          const nom = await Sauvegarde.exporterFichier();
+          alert('Fichier enregistré : ' + nom + '\n\nImporte-le sur l\'autre appareil.');
+        });
       } catch (erreur) {
         zone.innerHTML = `<div class="avertissement">${this.h(erreur.message)}</div>`;
       }

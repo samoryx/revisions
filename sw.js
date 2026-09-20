@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v1';
+const VERSION = 'revisions-v3';   // v3 : aide à la synchronisation entre appareils
 
 const FICHIERS = [
   './',

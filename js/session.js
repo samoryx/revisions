@@ -2,8 +2,11 @@
    La session de révision : constituer la file de cartes, puis
    enregistrer chaque réponse.
 
-   Deux principes du cahier des charges sont ici :
-   - MÉLANGE : les cartes dues de tous les paquets sont mélangées.
+   Trois principes du cahier des charges sont ici :
+   - PRIORITÉ : les paquets urgents passent d'abord, puis la section
+     Apprendre, puis Comprendre, puis Entretenir.
+   - MÉLANGE : à l'intérieur de chaque niveau de priorité, les cartes
+     de tous les paquets sont mélangées.
      (Attention : mélanger des matières sans rapport n'apprend rien
      en soi. Le vrai bénéfice vient des cartes qui obligent à
      distinguer deux notions proches — ça se joue à l'écriture des
@@ -39,33 +42,29 @@ const Session = {
     this.cartes = {};
     toutesLesCartes.forEach(c => { this.cartes[c.id] = c; });
 
-    const retenue = carte => {
-      if (carte.statut !== 'active') return false;                       // brouillons et cartes suspendues exclus
-      const paquet = this.paquets[carte.paquetId];
-      if (!paquet || paquet.archive) return false;
-      if (paquetsChoisis && paquetsChoisis.indexOf(carte.paquetId) === -1) return false;
-      return true;
-    };
+    // Même sélection que celle annoncée sur l'accueil.
+    const selection = Planification.selectionDuJour(toutesLesCartes, paquets, this.reglages, jour, paquetsChoisis);
 
-    const dues = toutesLesCartes.filter(c => retenue(c) && Planification.estDue(c, jour));
+    // On range les cartes par priorité : paquets urgents, puis Apprendre,
+    // Comprendre, et Entretenir en dernier. À l'intérieur de chaque groupe,
+    // on mélange. Si tu t'arrêtes en cours de route (bus, pause), ce qui
+    // presse le plus aura été fait.
+    const groupes = {};
+    selection.dues.concat(selection.nouvelles).forEach(carte => {
+      const priorite = Planification.priorite(this.paquets[carte.paquetId], jour);
+      if (!groupes[priorite]) groupes[priorite] = [];
+      groupes[priorite].push(carte);
+    });
+    let ordre = [];
+    Object.keys(groupes).map(Number).sort((a, b) => a - b).forEach(priorite => {
+      ordre = ordre.concat(this.eviterDeuxFoisLeMemePaquet(this.melanger(groupes[priorite])));
+    });
 
-    // Cartes jamais vues, dans la limite du quota quotidien.
-    const dejaIntroduitesAujourdHui = toutesLesCartes.filter(
-      c => c.etat && c.etat.nbRevisions === 1 && c.etat.dernierJour === jour
-    ).length;
-    const placesRestantes = Math.max(0, this.reglages.nouvellesParJour - dejaIntroduitesAujourdHui);
-    const nouvelles = toutesLesCartes
-      .filter(c => retenue(c) && !c.etat)
-      .slice(0, placesRestantes);
-
-    const melangees = this.melanger(dues.concat(nouvelles));
-    const espacees = this.eviterDeuxFoisLeMemePaquet(melangees);
-
-    this.file = espacees.map(c => ({ carteId: c.id, repetition: false }));
+    this.file = ordre.map(c => ({ carteId: c.id, repetition: false }));
     this.position = 0;
     this.compteur = { vues: 0, reussies: 0, ratees: 0 };
     this.debutCarte = Date.now();
-    return { dues: dues.length, nouvelles: nouvelles.length, total: this.file.length };
+    return { dues: selection.dues.length, nouvelles: selection.nouvelles.length, total: this.file.length };
   },
 
   // Mélange de Fisher-Yates : chaque ordre a la même probabilité.
