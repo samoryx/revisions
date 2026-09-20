@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v5';   // v5 : synchronisation automatique chiffrée
+const VERSION = 'revisions-v7';   // v7 : correction de la première synchronisation
 
 const FICHIERS = [
   './',

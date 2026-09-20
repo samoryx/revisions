@@ -129,6 +129,7 @@ const Synchro = {
     let reponse;
     try {
       reponse = await fetch('https://api.github.com' + chemin, Object.assign({
+        cache: 'no-store',      // toujours la version à jour, jamais celle du cache
         headers: {
           'Authorization': 'Bearer ' + reglages.jeton,
           'Accept': 'application/vnd.github+json',
@@ -140,16 +141,23 @@ const Synchro = {
     }
     if (reponse.status === 401) throw new Error('Jeton refusé : il est peut-être expiré ou mal copié.');
     if (reponse.status === 403) throw new Error('Accès refusé : le jeton doit avoir la permission « Contents : Read and write » sur ce dépôt.');
-    if (reponse.status === 404 && !chemin.endsWith(this.CHEMIN_FICHIER)) {
-      throw new Error('Dépôt introuvable : vérifie le nom (utilisateur/dépôt) et l\'accès du jeton.');
-    }
     return reponse;
   },
 
   async lireDistant() {
     const reglages = this.reglages();
-    const reponse = await this.appel('/repos/' + reglages.depot + '/contents/' + this.CHEMIN_FICHIER + '?t=' + Date.now());
-    if (reponse.status === 404) return { enveloppe: null, sha: null };   // première synchronisation
+    const reponse = await this.appel('/repos/' + reglages.depot + '/contents/' + this.CHEMIN_FICHIER);
+    if (reponse.status === 404) {
+      /* GitHub répond « pas trouvé » dans deux cas très différents : le fichier
+         n'existe pas encore (normal à la première synchronisation), ou le dépôt
+         est inaccessible. On tranche en demandant le dépôt lui-même. */
+      const verification = await this.appel('/repos/' + reglages.depot);
+      if (verification.status === 404) {
+        throw new Error('Dépôt introuvable : vérifie le nom (utilisateur/dépôt), et que le jeton donne accès à CE dépôt.');
+      }
+      if (!verification.ok) throw new Error('Dépôt inaccessible (code ' + verification.status + ').');
+      return { enveloppe: null, sha: null };   // première synchronisation : le fichier va être créé
+    }
     if (!reponse.ok) throw new Error('Lecture impossible (code ' + reponse.status + ').');
     const fichier = await reponse.json();
     const texte = new TextDecoder().decode(this.depuisBase64(fichier.content.replace(/\n/g, '')));

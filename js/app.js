@@ -946,6 +946,8 @@ const App = {
       <input type="password" id="synchro-jeton" value="${this.h(synchroReglages.jeton || '')}" placeholder="github_pat_…" autocapitalize="off" autocorrect="off" spellcheck="false">
       <label for="synchro-phrase">Phrase de passe (la même sur les deux appareils)</label>
       <input type="password" id="synchro-phrase" value="${this.h(synchroReglages.phrase || '')}" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label><input type="checkbox" id="synchro-afficher"> Afficher le jeton et la phrase de passe</label>
+      <p class="doux">Utile le jour où tu ne te souviens plus de ta phrase : tant qu'un appareil est configuré, tu peux la relire ici.</p>
       <p class="doux">Cette phrase chiffre tes données avant l'envoi : sans elle, le fichier déposé sur GitHub est illisible. Elle ne part jamais nulle part. Si tu l'oublies, tu perds la synchronisation, pas tes cartes.</p>
       <button class="bouton large" data-activer-synchro="1">${synchroPrete ? 'Enregistrer et synchroniser' : 'Activer la synchronisation'}</button>`;
 
@@ -1042,6 +1044,15 @@ const App = {
     };
 
     this.brancher('[data-synchro]', 'click', async e => { await lancerSynchro(e.currentTarget); });
+
+    const caseAfficher = document.getElementById('synchro-afficher');
+    if (caseAfficher) {
+      caseAfficher.addEventListener('change', () => {
+        ['synchro-jeton', 'synchro-phrase'].forEach(id => {
+          document.getElementById(id).type = caseAfficher.checked ? 'text' : 'password';
+        });
+      });
+    }
 
     this.brancher('[data-activer-synchro]', 'click', async e => {
       const bouton = e.currentTarget;
