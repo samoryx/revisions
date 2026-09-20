@@ -40,6 +40,14 @@ const App = {
 
     await this.mettreANiveau();
     await this.aller('accueil', {}, true);
+
+    // Synchronisation silencieuse au lancement : si l'appareil est hors ligne,
+    // il ne se passe rien et les révisions marchent quand même.
+    if (Synchro.estConfigure()) {
+      Synchro.synchroniserEnFond().then(resultat => {
+        if (resultat.etat === 'ok' && this.ecran === 'accueil') this.rendre();
+      });
+    }
   },
 
   /* Adapte les données créées par une version précédente de l'app.
@@ -217,6 +225,10 @@ const App = {
       liste.forEach(p => { html += this.ligneAccueil(p, aFaire[p.id], jour); });
       html += '</div>';
     });
+
+    if (Synchro.estConfigure()) {
+      html += `<p class="doux centre">Synchronisation : ${Synchro.texteDerniereSynchro()}</p>`;
+    }
 
     this.afficher('Aujourd\'hui', html);
     this.brancher('[data-va]', 'click', e => this.aller(e.currentTarget.dataset.va));
@@ -632,6 +644,7 @@ const App = {
     this.brouillonReponse = '';
     this.confianceChoisie = null;
     this.elementsCoches = [];
+    this.synchroFinFaite = false;
     await this.aller('session', {}, true);
   },
 
@@ -641,6 +654,11 @@ const App = {
     if (this.phaseSession === 'fin') {
       const c = Session.compteur;
       const taux = c.vues > 0 ? Math.round(100 * c.reussies / c.vues) : 0;
+      // Fin de session : on envoie le travail à l'autre appareil, une seule fois.
+      if (!this.synchroFinFaite && Synchro.estConfigure()) {
+        this.synchroFinFaite = true;
+        Synchro.synchroniserEnFond();
+      }
       this.afficher('Session terminée', `<div class="bloc centre">
         <h2>Terminé</h2>
         <p>${c.vues} réponses · ${taux} % de réussite · ${c.ratees} échec(s)</p>
@@ -870,6 +888,9 @@ const App = {
     const html = `<div class="bloc">
       <h2>Importer des cartes</h2>
       <p class="doux">Le fichier .json préparé par Claude à partir de tes photos de cours. Les cartes arrivent en brouillon : tu les relis avant qu'elles entrent en révision.</p>
+      <div class="avertissement">À faire sur <strong>un seul appareil</strong> (ton PC). Sur l'autre, passe par
+      Réglages → Importer et fusionner. Importer le même fichier de cartes des deux côtés créerait
+      les mêmes questions en double, avec deux historiques séparés.</div>
       <!-- Pas de filtre "accept" : le sélecteur de fichiers d'Android grise
            parfois les .json quand on en met un. Mieux vaut tout afficher. -->
       <input type="file" id="fichier-cartes">
@@ -915,7 +936,36 @@ const App = {
     const reglages = await Donnees.reglages();
     const protege = (navigator.storage && navigator.storage.persisted) ? await navigator.storage.persisted() : false;
 
+    const synchroReglages = Synchro.reglages();
+    const synchroPrete = Synchro.estConfigure();
+
+    const formulaireSynchro = `
+      <label for="synchro-depot">Dépôt privé (utilisateur/dépôt)</label>
+      <input type="text" id="synchro-depot" value="${this.h(synchroReglages.depot || '')}" placeholder="samoryx/revisions-donnees" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label for="synchro-jeton">Jeton d'accès</label>
+      <input type="password" id="synchro-jeton" value="${this.h(synchroReglages.jeton || '')}" placeholder="github_pat_…" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <label for="synchro-phrase">Phrase de passe (la même sur les deux appareils)</label>
+      <input type="password" id="synchro-phrase" value="${this.h(synchroReglages.phrase || '')}" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <p class="doux">Cette phrase chiffre tes données avant l'envoi : sans elle, le fichier déposé sur GitHub est illisible. Elle ne part jamais nulle part. Si tu l'oublies, tu perds la synchronisation, pas tes cartes.</p>
+      <button class="bouton large" data-activer-synchro="1">${synchroPrete ? 'Enregistrer et synchroniser' : 'Activer la synchronisation'}</button>`;
+
     const html = `<div class="bloc">
+      <h2>Synchronisation automatique</h2>
+      ${synchroPrete ? `
+        <p class="doux">Dépôt : <strong>${this.h(synchroReglages.depot)}</strong><br>
+        Dernière synchronisation : <strong>${Synchro.texteDerniereSynchro()}</strong></p>
+        ${synchroReglages.dernierMessage ? `<div class="avertissement">${this.h(synchroReglages.dernierMessage)}</div>` : ''}
+        <button class="bouton large" data-synchro="1">Synchroniser maintenant</button>
+        <div id="resultat-synchro"></div>
+        <details style="margin-top:10px"><summary class="doux">Modifier les réglages</summary>${formulaireSynchro}
+          <button class="bouton secondaire large" data-oublier-synchro="1">Oublier ces réglages sur cet appareil</button>
+        </details>`
+      : `<p class="doux">Elle évite le câble : chaque appareil dépose et récupère les révisions tout seul, dans un dépôt privé qui t'appartient. Les données sont chiffrées avant l'envoi. La marche à suivre pour créer le dépôt et le jeton est dans le LISEZ-MOI.</p>
+        ${formulaireSynchro}
+        <div id="resultat-synchro"></div>`}
+    </div>
+
+    <div class="bloc">
       <h2>Sauvegarde et transfert</h2>
       <p class="doux">Le fichier exporté contient tout : paquets, cartes et journal des révisions. Sur l'autre appareil, « Importer et fusionner » additionne les deux journaux sans rien écraser.</p>
       <button class="bouton large" data-exporter="1">Exporter une sauvegarde</button>
@@ -962,6 +1012,54 @@ const App = {
 
     this.afficher('Réglages', html);
 
+    // --- Synchronisation ---
+
+    const afficherResultatSynchro = resultat => {
+      const zone = document.getElementById('resultat-synchro');
+      if (!zone) return;
+      if (resultat.etat === 'ok') {
+        zone.innerHTML = `<div class="bloc"><strong class="vert">Synchronisé.</strong>
+          ${resultat.recu.revisions} révision(s) reçue(s) de l'autre appareil,
+          ${resultat.recu.cartes} carte(s), ${resultat.recu.paquets} paquet(s).
+          Fichier envoyé : ${Math.round(resultat.taille / 1024)} Ko.
+          ${resultat.alerteTaille ? '<br><strong class="orange">Le fichier devient gros : signale-le à Claude.</strong>' : ''}</div>`;
+      } else if (resultat.etat === 'erreur') {
+        zone.innerHTML = `<div class="avertissement">${this.h(resultat.message)}</div>`;
+      } else if (resultat.etat === 'hors-ligne') {
+        zone.innerHTML = '<div class="bloc doux">Pas de connexion : la synchronisation se fera plus tard.</div>';
+      }
+    };
+
+    const lancerSynchro = async bouton => {
+      const texteInitial = bouton.textContent;
+      bouton.disabled = true;
+      bouton.textContent = 'Synchronisation…';
+      const resultat = await Synchro.synchroniser();
+      bouton.disabled = false;
+      bouton.textContent = texteInitial;
+      afficherResultatSynchro(resultat);
+      if (resultat.etat === 'ok') await this.rendre();
+    };
+
+    this.brancher('[data-synchro]', 'click', async e => { await lancerSynchro(e.currentTarget); });
+
+    this.brancher('[data-activer-synchro]', 'click', async e => {
+      const bouton = e.currentTarget;
+      const depot = document.getElementById('synchro-depot').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, '');
+      const jeton = document.getElementById('synchro-jeton').value.trim();
+      const phrase = document.getElementById('synchro-phrase').value;
+      if (!/^[^/\s]+\/[^/\s]+$/.test(depot)) { alert('Le dépôt s\'écrit sous la forme utilisateur/dépôt, par exemple samoryx/revisions-donnees.'); return; }
+      if (!jeton || !phrase) { alert('Il faut le jeton et la phrase de passe.'); return; }
+      Synchro.enregistrerReglages({ depot, jeton, phrase, nomAppareil: reglages.nomAppareil });
+      await lancerSynchro(bouton);
+    });
+
+    this.brancher('[data-oublier-synchro]', 'click', async () => {
+      if (!confirm('Oublier le dépôt, le jeton et la phrase de passe sur cet appareil ? Tes cartes ne sont pas touchées.')) return;
+      Synchro.oublier();
+      await this.rendre();
+    });
+
     this.brancher('[data-exporter]', 'click', async () => {
       const nom = await Sauvegarde.exporterFichier();
       alert('Sauvegarde enregistrée : ' + nom);
@@ -997,6 +1095,10 @@ const App = {
         seuilSangsue: Number(document.getElementById('sangsue').value),
         nomAppareil: document.getElementById('appareil').value.trim() || 'Appareil'
       });
+      // Le nom de l'appareil sert aussi à signer les envois de synchronisation.
+      if (Synchro.estConfigure()) {
+        Synchro.enregistrerReglages({ nomAppareil: document.getElementById('appareil').value.trim() || 'Appareil' });
+      }
       alert('Réglages enregistrés.');
       await this.rendre();
     });

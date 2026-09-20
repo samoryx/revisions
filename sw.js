@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v3';   // v3 : aide à la synchronisation entre appareils
+const VERSION = 'revisions-v5';   // v5 : synchronisation automatique chiffrée
 
 const FICHIERS = [
   './',
@@ -20,6 +20,7 @@ const FICHIERS = [
   './js/donnees.js',
   './js/planification.js',
   './js/sauvegarde.js',
+  './js/synchro.js',
   './js/session.js',
   './js/app.js',
   './manifest.webmanifest',
