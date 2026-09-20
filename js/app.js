@@ -949,7 +949,8 @@ const App = {
       <label><input type="checkbox" id="synchro-afficher"> Afficher le jeton et la phrase de passe</label>
       <p class="doux">Utile le jour où tu ne te souviens plus de ta phrase : tant qu'un appareil est configuré, tu peux la relire ici.</p>
       <p class="doux">Cette phrase chiffre tes données avant l'envoi : sans elle, le fichier déposé sur GitHub est illisible. Elle ne part jamais nulle part. Si tu l'oublies, tu perds la synchronisation, pas tes cartes.</p>
-      <button class="bouton large" data-activer-synchro="1">${synchroPrete ? 'Enregistrer et synchroniser' : 'Activer la synchronisation'}</button>`;
+      <button class="bouton large" data-activer-synchro="1">${synchroPrete ? 'Enregistrer et synchroniser' : 'Activer la synchronisation'}</button>
+      <button class="bouton secondaire large" data-diagnostic="1">Tester la connexion</button>`;
 
     const html = `<div class="bloc">
       <h2>Synchronisation automatique</h2>
@@ -1044,6 +1045,20 @@ const App = {
     };
 
     this.brancher('[data-synchro]', 'click', async e => { await lancerSynchro(e.currentTarget); });
+
+    this.brancher('[data-diagnostic]', 'click', async e => {
+      const bouton = e.currentTarget;
+      // On enregistre d'abord ce qui est saisi, pour tester ces valeurs-là.
+      const depot = document.getElementById('synchro-depot').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, '');
+      const jeton = document.getElementById('synchro-jeton').value.trim();
+      const phrase = document.getElementById('synchro-phrase').value;
+      if (depot && jeton && phrase) Synchro.enregistrerReglages({ depot, jeton, phrase });
+      bouton.disabled = true;
+      const lignes = await Synchro.diagnostic();
+      bouton.disabled = false;
+      const zone = document.getElementById('resultat-synchro');
+      if (zone) zone.innerHTML = '<div class="bloc">' + lignes.map(l => '<p>' + this.h(l) + '</p>').join('') + '</div>';
+    });
 
     const caseAfficher = document.getElementById('synchro-afficher');
     if (caseAfficher) {

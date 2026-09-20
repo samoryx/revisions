@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v7';   // v7 : correction de la première synchronisation
+const VERSION = 'revisions-v8';   // v8 : bouton « Tester la connexion »
 
 const FICHIERS = [
   './',

@@ -183,6 +183,54 @@ const Synchro = {
     return true;
   },
 
+  /* Teste la configuration point par point et dit ce qui ne va pas.
+     Trois questions : le jeton est-il valide ? donne-t-il accès à ce dépôt ?
+     a-t-il le droit d'y écrire ? */
+  async diagnostic() {
+    const reglages = this.reglages();
+    const lignes = [];
+    if (!reglages.depot || !reglages.jeton || !reglages.phrase) {
+      return ['Il manque le dépôt, le jeton ou la phrase de passe.'];
+    }
+
+    let compte = null;
+    try {
+      const reponse = await this.appel('/user');
+      if (!reponse.ok) return ['Le jeton est refusé par GitHub (code ' + reponse.status + ').'];
+      compte = await reponse.json();
+      lignes.push('✅ Jeton valide, il appartient au compte « ' + compte.login + ' ».');
+    } catch (erreur) {
+      return ['❌ ' + erreur.message];
+    }
+
+    const proprietaire = reglages.depot.split('/')[0];
+    if (compte && proprietaire.toLowerCase() !== compte.login.toLowerCase()) {
+      lignes.push('⚠️ Le dépôt commence par « ' + proprietaire + ' » alors que le jeton appartient à « ' + compte.login + ' ». Le début doit être ton nom de compte.');
+    }
+
+    try {
+      const reponse = await this.appel('/repos/' + reglages.depot);
+      if (reponse.status === 404) {
+        lignes.push('❌ Ce jeton ne voit pas le dépôt « ' + reglages.depot + ' ».');
+        lignes.push('Deux causes possibles : le nom du dépôt n\'est pas exactement celui-là, ou le jeton a été créé avec « Public repositories » au lieu de « Only select repositories » → ' + (reglages.depot.split('/')[1] || '') + '.');
+        return lignes;
+      }
+      if (!reponse.ok) { lignes.push('❌ Dépôt inaccessible (code ' + reponse.status + ').'); return lignes; }
+      const depot = await reponse.json();
+      lignes.push('✅ Dépôt trouvé : « ' + depot.full_name + ' »' + (depot.private ? ' (privé, c\'est bien)' : ' — attention, il est PUBLIC'));
+      if (depot.permissions && depot.permissions.push === false) {
+        lignes.push('❌ Le jeton peut lire mais pas écrire : mets la permission « Contents » sur « Read and write ».');
+        return lignes;
+      }
+      lignes.push('✅ Droit d\'écriture accordé.');
+    } catch (erreur) {
+      lignes.push('❌ ' + erreur.message);
+      return lignes;
+    }
+    lignes.push('Tout est en ordre : clique sur « Synchroniser maintenant ».');
+    return lignes;
+  },
+
   // ---------- La synchronisation elle-même ----------
 
   /* Un tour = lire le distant, le fusionner ici, renvoyer le tout.
