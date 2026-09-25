@@ -167,15 +167,16 @@ const Planification = {
     return Math.max(1, Math.round(jours * (1 + variation)));
   },
 
-  /* Rejoue tout le journal d'une carte et renvoie son état complet. */
-  etatDepuisJournal: function (revisions, paquet, reglages) {
+  /* Rejoue tout le journal d'une carte et renvoie son PARCOURS : une étape
+     par révision qui a compté, avec l'intervalle qu'elle a produit.
+     C'est la source unique — l'état de la carte en est simplement la
+     dernière étape, et l'affichage « 46 j → échec → 3 j » la parcourt. */
+  parcours: function (revisions, paquet, reglages) {
+    const etapes = [];
     let memoire = null;          // { stabilite, difficulte }
     let dernierJour = null;
-    let dueLe = null;
-    let dernierIntervalle = 0;
     let echecs = 0;
     let reussitesDeSuite = 0;
-    let nbPlanifiees = 0;
 
     for (let i = 0; i < revisions.length; i++) {
       const revision = revisions[i];
@@ -192,7 +193,6 @@ const Planification = {
       if (memoire && joursEcoules === 0) continue;
 
       memoire = FSRS.prochainEtat(memoire, joursEcoules, revision.note);
-      nbPlanifiees++;
 
       if (revision.note === 1) {
         echecs++;
@@ -201,23 +201,38 @@ const Planification = {
         reussitesDeSuite++;
       }
 
-      dernierIntervalle = this.calculerIntervalle(memoire.stabilite, jour, paquet, reglages, revision.id);
-      dueLe = this.ajouterJours(jour, dernierIntervalle);
+      const intervalle = this.calculerIntervalle(memoire.stabilite, jour, paquet, reglages, revision.id);
+      etapes.push({
+        jour: jour,
+        note: revision.note,
+        joursEcoules: joursEcoules,
+        intervalle: intervalle,
+        dueLe: this.ajouterJours(jour, intervalle),
+        stabilite: memoire.stabilite,
+        difficulte: memoire.difficulte,
+        echecs: echecs,
+        reussitesDeSuite: reussitesDeSuite
+      });
       dernierJour = jour;
     }
+    return etapes;
+  },
 
-    if (!memoire) return null;   // carte jamais révisée
-
+  /* L'état d'une carte = la dernière étape de son parcours. */
+  etatDepuisJournal: function (revisions, paquet, reglages) {
+    const etapes = this.parcours(revisions, paquet, reglages);
+    if (etapes.length === 0) return null;   // carte jamais révisée
+    const derniere = etapes[etapes.length - 1];
     return {
-      stabilite: memoire.stabilite,
-      difficulte: memoire.difficulte,
-      dueLe: dueLe,
-      dernierJour: dernierJour,
-      dernierIntervalle: dernierIntervalle,
-      echecs: echecs,
-      reussitesDeSuite: reussitesDeSuite,
-      nbRevisions: nbPlanifiees,
-      acquise: reussitesDeSuite >= this.REUSSITES_POUR_ACQUISE
+      stabilite: derniere.stabilite,
+      difficulte: derniere.difficulte,
+      dueLe: derniere.dueLe,
+      dernierJour: derniere.jour,
+      dernierIntervalle: derniere.intervalle,
+      echecs: derniere.echecs,
+      reussitesDeSuite: derniere.reussitesDeSuite,
+      nbRevisions: etapes.length,
+      acquise: derniere.reussitesDeSuite >= this.REUSSITES_POUR_ACQUISE
     };
   },
 

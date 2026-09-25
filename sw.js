@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v8';   // v8 : bouton « Tester la connexion »
+const VERSION = 'revisions-v11';  // v11 : parcours d'une carte, charge par paquet, cache fiable
 
 const FICHIERS = [
   './',
@@ -30,9 +30,17 @@ const FICHIERS = [
 
 self.addEventListener('install', evenement => {
   evenement.waitUntil(
-    caches.open(VERSION)
-      .then(cache => cache.addAll(FICHIERS))
-      .then(() => self.skipWaiting())
+    caches.open(VERSION).then(async cache => {
+      /* « reload » force le passage par le réseau. Sans ça, le navigateur peut
+         recopier dans le cache une version périmée qu'il avait encore sous la
+         main — et l'app resterait bloquée dessus jusqu'au prochain changement
+         de VERSION, même après une mise à jour sur GitHub. */
+      await Promise.all(FICHIERS.map(async fichier => {
+        const reponse = await fetch(fichier, { cache: 'reload' });
+        if (reponse.ok) await cache.put(fichier, reponse);
+      }));
+      await self.skipWaiting();
+    })
   );
 });
 

@@ -286,6 +286,36 @@ const App = {
     </div>`;
   },
 
+  /* Le parcours d'une carte, façon « 2 j → 11 j → échec 3 j → 8 j ».
+     Chaque étape montre l'intervalle qu'a produit cette révision-là. */
+  blocParcours(etapes, titre) {
+    if (!etapes || etapes.length === 0) {
+      return `<div class="bloc"><div class="doux">${titre}</div><p class="doux">Première fois que tu vois cette carte.</p></div>`;
+    }
+    const noms = { 1: 'raté', 2: 'difficile', 3: 'correct', 4: 'facile' };
+    const puces = etapes.map(etape => {
+      const classe = etape.note === 1 ? 'etape ratee' : 'etape';
+      const titreEtape = Planification.jourLisible(etape.jour) + ' · ' + noms[etape.note];
+      return `<span class="${classe}" title="${titreEtape}">${etape.note === 1 ? 'échec ' : ''}${etape.intervalle} j</span>`;
+    }).join('<span class="fleche">→</span>');
+    const derniere = etapes[etapes.length - 1];
+    return `<div class="bloc">
+      <div class="doux">${titre}</div>
+      <div class="parcours">${puces}</div>
+      <p class="doux">${etapes.length} révision${etapes.length > 1 ? 's' : ''} · ${derniere.echecs} échec${derniere.echecs > 1 ? 's' : ''} ·
+      difficulté ${derniere.difficulte.toFixed(1)}/10 · tu retiens cette carte environ ${Math.round(derniere.stabilite)} jours</p>
+    </div>`;
+  },
+
+  /* Rappel de la question, affiché pendant la confiance et la correction :
+     sans lui, on corrige sans se souvenir de ce qui était demandé. */
+  blocQuestion(carte) {
+    return `<div class="bloc rappel-question">
+      <div class="doux">Question</div>
+      <div style="white-space:pre-wrap">${this.h(carte.question)}</div>
+    </div>`;
+  },
+
   texteCompteurs(aFaire) {
     let texte = `${aFaire.dues} à revoir · ${aFaire.nouvelles} nouvelle${aFaire.nouvelles > 1 ? 's' : ''}`;
     if (aFaire.enAttente > 0) texte += ` · ${aFaire.enAttente} en attente`;
@@ -527,6 +557,7 @@ const App = {
     const carte = await Donnees.lire('cartes', this.contexte.carteId);
     if (!carte) return this.retour();
     const paquet = await Donnees.lire('paquets', carte.paquetId);
+    const etapesCarte = Planification.parcours(await Donnees.revisionsDeLaCarte(carte.id), paquet, await Donnees.reglages());
 
     let etatHtml = '<p class="doux">Jamais révisée.</p>';
     if (carte.etat) {
@@ -565,6 +596,8 @@ const App = {
       ${carte.source ? `<p class="doux">Source : ${this.h(carte.source)}</p>` : ''}
       ${etatHtml}
     </div>
+
+    ${carte.etat ? this.blocParcours(etapesCarte, 'Parcours de cette carte') : ''}
 
     <div class="bloc">
       <button class="bouton large" data-enregistrer-carte="1">${carte.statut === 'brouillon' ? 'Valider cette carte (elle entrera en révision)' : 'Enregistrer'}</button>
@@ -703,7 +736,7 @@ const App = {
         [3, 'Plutôt sûr', 'je pense que c\'est bon'],
         [4, 'Certain', 'j\'en suis sûr']
       ];
-      this.afficher('Révision', entete + `
+      this.afficher('Révision', entete + this.blocQuestion(carte) + `
         <div class="bloc">
           <h2>À quel point es-tu sûr de la réponse que tu viens d'écrire ?</h2>
           <p class="doux">Tu juges ta réponse, pas la question. C'est ce qui permet de mesurer l'écart entre ce que tu crois savoir et ce que tu sais.</p>
@@ -735,7 +768,7 @@ const App = {
     }
 
     const elements = carte.elementsCles || [];
-    this.afficher('Correction', entete + `
+    this.afficher('Correction', entete + this.blocQuestion(carte) + `
       ${carte.surPapier ? '' : `<div class="bloc"><label>Ce que tu as écrit</label><div class="ma-reponse">${this.h(this.brouillonReponse) || '<em class="doux">(rien)</em>'}</div></div>`}
 
       <div class="bloc">
@@ -759,7 +792,9 @@ const App = {
           <button data-note="3"><strong>Correct</strong><small>→ ${apercu[3]} j</small></button>
           <button data-note="4"><strong>Facile</strong><small>immédiat · ${apercu[4]} j</small></button>
         </div>
-      </div>`);
+      </div>
+
+      ${this.blocParcours(Planification.parcours(await Donnees.revisionsDeLaCarte(carte.id), paquet, reglages), 'Parcours de cette carte')}`);
 
     const majSuggestion = () => {
       const tousCoches = elements.length === 0 || this.elementsCoches.every(Boolean);
@@ -806,16 +841,28 @@ const App = {
   async ecranStats() {
     const jour = Planification.jourAujourdhui();
     const reglages = await Donnees.reglages();
+    const paquets = await Donnees.tous('paquets');
+    const parId = {};
+    paquets.forEach(p => { parId[p.id] = p; });
     const cartes = await Donnees.tous('cartes');
     const revisions = await Donnees.tous('revisions');
     const actives = cartes.filter(c => c.statut === 'active');
+    // La prévision ne compte que les cartes réellement en jeu : une carte
+    // « hors section » ne sera pas posée, elle n'a rien à faire dans la charge.
+    const enJeu = actives.filter(c => parId[c.paquetId] && Planification.carteEnJeu(c, parId[c.paquetId]));
 
-    // Prévision des 7 prochains jours.
+    // Prévision des 7 prochains jours, avec le détail par paquet.
     const prevision = [];
     for (let i = 0; i < 7; i++) {
       const j = Planification.ajouterJours(jour, i);
-      const nombre = actives.filter(c => c.etat && (i === 0 ? c.etat.dueLe <= j : c.etat.dueLe === j)).length;
-      prevision.push({ jour: j, nombre: nombre });
+      // La première colonne ramasse aussi le retard accumulé.
+      const duJour = enJeu.filter(c => c.etat && (i === 0 ? c.etat.dueLe <= j : c.etat.dueLe === j));
+      const parPaquet = {};
+      duJour.forEach(c => {
+        const nom = parId[c.paquetId].nom;
+        parPaquet[nom] = (parPaquet[nom] || 0) + 1;
+      });
+      prevision.push({ jour: j, nombre: duJour.length, parPaquet: parPaquet });
     }
     const maximum = Math.max(1, ...prevision.map(p => p.nombre));
 
@@ -844,11 +891,13 @@ const App = {
     let html = `<div class="bloc">
       <h2>Charge des 7 prochains jours</h2>
       <div class="histogramme">
-        ${prevision.map(p => `<div class="colonne"><div class="barre" style="height:${Math.round(100 * p.nombre / maximum)}%" title="${p.nombre}"></div><div class="jour">${p.nombre}</div></div>`).join('')}
+        ${prevision.map((p, i) => `<div class="colonne cliquable" data-detail-jour="${i}"><div class="barre" style="height:${Math.round(100 * p.nombre / maximum)}%"></div><div class="jour">${p.nombre}</div></div>`).join('')}
       </div>
       <div class="histogramme" style="height:auto">
-        ${prevision.map(p => `<div class="colonne"><div class="jour">${Planification.jourLisible(p.jour).split(' ')[0]}</div></div>`).join('')}
+        ${prevision.map((p, i) => `<div class="colonne cliquable" data-detail-jour="${i}"><div class="jour">${Planification.jourLisible(p.jour).split(' ')[0]}</div></div>`).join('')}
       </div>
+      <p class="doux">Touche une barre pour voir de quels paquets viennent ces cartes.</p>
+      <div id="detail-jour"></div>
     </div>
 
     <div class="bloc">
@@ -880,6 +929,19 @@ const App = {
 
     this.afficher('Suivi', html);
     this.brancher('[data-ouvrir-carte]', 'click', e => this.aller('carte', { carteId: e.currentTarget.dataset.ouvrirCarte }));
+
+    this.brancher('[data-detail-jour]', 'click', e => {
+      const index = Number(e.currentTarget.dataset.detailJour);
+      const p = prevision[index];
+      document.querySelectorAll('[data-detail-jour]').forEach(c => c.classList.toggle('choisie', Number(c.dataset.detailJour) === index));
+      const lignes = Object.keys(p.parPaquet).sort((a, b) => p.parPaquet[b] - p.parPaquet[a]);
+      const zone = document.getElementById('detail-jour');
+      zone.innerHTML = `<h2>${Planification.jourLisible(p.jour)}${index === 0 ? " (aujourd'hui, retard compris)" : ''}</h2>
+        ${lignes.length === 0 ? '<p class="doux">Rien à revoir ce jour-là.</p>' :
+          lignes.map(nom => `<div class="ligne"><div class="grandit">${this.h(nom)}</div><strong>${p.parPaquet[nom]}</strong></div>`).join('') +
+          `<div class="ligne"><div class="grandit"><strong>Total</strong></div><strong>${p.nombre}</strong></div>`}
+        <p class="doux">Seules les cartes déjà vues sont comptées : les nouvelles dépendent de ta limite quotidienne et du jour où tu ouvres l'app.</p>`;
+    });
   },
 
   // ---------- Écran : import ----------
