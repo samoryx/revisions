@@ -322,6 +322,24 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 .parcours .etape.ratee { background: #fbe9e7; color: var(--rouge); }
 .parcours .fleche { color: var(--texte-doux); font-size: 13px; }
 
+/* ---------- Cours ---------- */
+
+.texte-cours { line-height: 1.6; }
+.texte-cours p { margin: 0 0 10px; }
+.texte-cours ul { margin: 0 0 10px; padding-left: 22px; }
+.texte-cours li { margin-bottom: 4px; }
+.partie-cours.complement { background: #fffaf0; border-color: #f0d9a8; }
+.etiquette-complement {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--orange);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+.source-cours { font-size: 12px; margin-bottom: 0; }
+.ligne.sommaire { cursor: pointer; }
+
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--bordure); }
 th { color: var(--texte-doux); font-weight: 600; }

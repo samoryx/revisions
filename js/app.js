@@ -116,7 +116,8 @@ const App = {
       session: this.ecranSession,
       stats: this.ecranStats,
       reglages: this.ecranReglages,
-      import: this.ecranImport
+      import: this.ecranImport,
+      cours: this.ecranCours
     };
     const fonction = fonctions[this.ecran] || this.ecranAccueil;
     await fonction.call(this);
@@ -439,6 +440,14 @@ const App = {
     </div>
 
     <div class="bloc">
+      <h2>Cours</h2>
+      ${Array.isArray(paquet.cours) && paquet.cours.length > 0
+        ? `<p class="doux">${paquet.cours.length} partie${paquet.cours.length > 1 ? 's' : ''}. Pour découvrir le chapitre, ou retrouver une explication quand une carte résiste.</p>
+           <button class="bouton large" data-ouvrir-cours="1">Ouvrir le cours</button>`
+        : '<p class="doux">Pas encore de cours pour ce paquet. Il arrive avec les prochaines cartes que Claude prépare (/cartes).</p>'}
+    </div>
+
+    <div class="bloc">
       <label for="nom-paquet">Nom</label>
       <input type="text" id="nom-paquet" value="${this.h(paquet.nom)}">
       <label for="matiere-paquet">Matière</label>
@@ -509,6 +518,8 @@ const App = {
       await this.rendre();
     });
 
+    this.brancher('[data-ouvrir-cours]', 'click', () => this.aller('cours', { paquetId: paquet.id }));
+
     this.brancher('[data-section]', 'click', async e => {
       const nouvelle = e.currentTarget.dataset.section;
       if (nouvelle === section) return;
@@ -544,6 +555,55 @@ const App = {
       await Donnees.supprimer('paquets', paquet.id);
       await this.aller('paquets', {}, true);
     });
+  },
+
+  // ---------- Écran : le cours d'un paquet ----------
+
+  async ecranCours() {
+    const paquet = await Donnees.lire('paquets', this.contexte.paquetId);
+    if (!paquet) return this.retour();
+    const parties = Array.isArray(paquet.cours) ? paquet.cours : [];
+
+    let html = '';
+    if (parties.length === 0) {
+      html = '<div class="bloc"><p class="doux">Pas encore de cours pour ce paquet.</p></div>';
+    } else {
+      // Sommaire, dès qu'il y a de quoi s'y perdre.
+      if (parties.length > 2) {
+        html += `<div class="bloc"><h2>Sommaire</h2>${parties.map((p, i) =>
+          `<div class="ligne sommaire" data-aller-partie="${i}"><div class="grandit">${this.h(p.titre)}</div>${p.origine === 'complement' ? '<span class="pastille">complément</span>' : ''}</div>`).join('')}</div>`;
+      }
+      html += parties.map((p, i) => `
+        <div class="bloc partie-cours ${p.origine === 'complement' ? 'complement' : ''}" id="partie-${i}">
+          ${p.origine === 'complement' ? '<div class="etiquette-complement">Complément ajouté par Claude — ce n\'est pas dans ton cours</div>' : ''}
+          <h2>${this.h(p.titre)}</h2>
+          <div class="texte-cours">${this.texteEnHtml(p.texte)}</div>
+          ${p.source ? `<p class="doux source-cours">Source : ${this.h(p.source)}</p>` : ''}
+        </div>`).join('');
+      html += `<p class="doux centre">Une question sur ce cours ? Pose-la à Claude dans une conversation : il a tes photos et ce cours sous la main.</p>`;
+    }
+
+    this.afficher('Cours — ' + paquet.nom, html);
+    this.brancher('[data-aller-partie]', 'click', e => {
+      const cible = document.getElementById('partie-' + e.currentTarget.dataset.allerPartie);
+      if (cible) cible.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  },
+
+  /* Mise en forme minimale et sûre : on échappe TOUT d'abord, puis on
+     reconnaît seulement trois choses — **gras**, les lignes « - » (listes)
+     et les lignes vides (nouveau paragraphe). Aucun HTML venant du texte
+     ne peut donc passer. */
+  texteEnHtml(texte) {
+    const paragraphes = String(texte || '').split(/\n\s*\n/);
+    return paragraphes.map(bloc => {
+      const lignes = bloc.split('\n');
+      const gras = t => this.h(t).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      if (lignes.every(l => /^\s*-\s+/.test(l))) {
+        return '<ul>' + lignes.map(l => '<li>' + gras(l.replace(/^\s*-\s+/, '')) + '</li>').join('') + '</ul>';
+      }
+      return '<p>' + lignes.map(gras).join('<br>') + '</p>';
+    }).join('');
   },
 
   extrait(texte, longueur) {
@@ -970,6 +1030,8 @@ const App = {
         zone.innerHTML = `<div class="bloc"><strong>${rapport.ajoutees} carte(s) importée(s)</strong>
           dans « ${this.h(rapport.paquet.nom) }»${rapport.paquetCree ? ' (paquet créé)' : ''}.
           ${rapport.misesAJour > 0 ? rapport.misesAJour + ' déjà présente(s), marquage complété.' : ''}
+          ${rapport.coursAjoutees > 0 ? rapport.coursAjoutees + ' partie(s) de cours ajoutée(s).' : ''}
+          ${rapport.coursRemplacees > 0 ? rapport.coursRemplacees + ' partie(s) de cours mise(s) à jour.' : ''}
           ${rapport.ignorees > 0 ? rapport.ignorees + ' déjà présente(s), ignorée(s).' : ''}
           <button class="bouton large" data-valider-brouillons="1">Relire les brouillons maintenant</button></div>`;
         this.brancher('[data-valider-brouillons]', 'click', () => this.ouvrirBrouillons());

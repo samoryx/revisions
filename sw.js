@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v11';  // v11 : parcours d'une carte, charge par paquet, cache fiable
+const VERSION = 'revisions-v12';  // v12 : partie « cours » dans chaque paquet
 
 const FICHIERS = [
   './',

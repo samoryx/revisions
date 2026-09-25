@@ -152,6 +152,23 @@ const Sauvegarde = {
       await Donnees.ecrire('paquets', paquet);
     }
 
+    // Le cours du chapitre s'enrichit au fil des imports : une partie de même
+    // titre est remplacée (correction), une nouvelle partie est ajoutée à la fin.
+    const coursRecu = this.coursPropre(donnees.paquet && donnees.paquet.cours);
+    let coursAjoutees = 0;
+    let coursRemplacees = 0;
+    if (coursRecu.length > 0) {
+      const cours = Array.isArray(paquet.cours) ? paquet.cours.slice() : [];
+      coursRecu.forEach(partie => {
+        const position = cours.findIndex(p => p.titre === partie.titre);
+        if (position === -1) { cours.push(partie); coursAjoutees++; }
+        else { cours[position] = partie; coursRemplacees++; }
+      });
+      paquet.cours = cours;
+      paquet.modifieLe = maintenant;
+      await Donnees.ecrire('paquets', paquet);
+    }
+
     // On évite les doublons si le même fichier est importé deux fois.
     const existantes = (await Donnees.tous('cartes')).filter(function (c) { return c.paquetId === paquet.id; });
     const questionsConnues = {};
@@ -209,8 +226,23 @@ const Sauvegarde = {
     await Donnees.ecrirePlusieurs('cartes', nouvelles.concat(misesAJour));
     return {
       paquet: paquet, ajoutees: nouvelles.length, misesAJour: misesAJour.length,
-      ignorees: ignorees, paquetCree: paquetCree
+      ignorees: ignorees, paquetCree: paquetCree,
+      coursAjoutees: coursAjoutees, coursRemplacees: coursRemplacees
     };
+  },
+
+  /* Ne garde du cours reçu que des parties bien formées.
+     origine : "cours" = tiré de tes photos ; "complement" = ajouté par Claude. */
+  coursPropre(cours) {
+    if (!Array.isArray(cours)) return [];
+    return cours
+      .filter(p => p && String(p.titre || '').trim() && String(p.texte || '').trim())
+      .map(p => ({
+        titre: String(p.titre).trim(),
+        texte: String(p.texte),
+        origine: p.origine === 'complement' ? 'complement' : 'cours',
+        source: String(p.source || '')
+      }));
   },
 
   // ---------- Lecture d'un fichier choisi par l'utilisateur ----------
