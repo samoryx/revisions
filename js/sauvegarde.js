@@ -128,6 +128,13 @@ const Sauvegarde = {
     const nomVoulu = (donnees.paquet && donnees.paquet.nom) ? donnees.paquet.nom : 'Sans nom';
     let paquet = paquets.find(function (p) { return p.nom === nomVoulu; });
     let paquetCree = false;
+    // Un fichier sans carte ne contient qu'un cours : il complète un paquet
+    // existant. S'il ne le trouve pas (paquet renommé, faute de frappe), on
+    // refuse plutôt que de créer un paquet vide qui ne servirait à rien.
+    if (!paquet && donnees.cartes.length === 0) {
+      throw new Error('Ce fichier ne contient qu\'un cours, à ajouter au paquet « ' + nomVoulu +
+        ' ». Aucun paquet ne porte exactement ce nom dans l\'app. Si tu l\'as renommé, remets-lui ce nom le temps de l\'import, ou signale-le à Claude.');
+    }
     if (!paquet) {
       const echeance = (donnees.paquet && donnees.paquet.echeance) || null;
       const sectionFichier = donnees.paquet && donnees.paquet.section;

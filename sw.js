@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v12';  // v12 : partie « cours » dans chaque paquet
+const VERSION = 'revisions-v13';  // v13 : un fichier « cours seul » ne crée jamais de paquet vide
 
 const FICHIERS = [
   './',
