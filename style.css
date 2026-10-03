@@ -322,6 +322,94 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 .parcours .etape.ratee { background: #fbe9e7; color: var(--rouge); }
 .parcours .fleche { color: var(--texte-doux); font-size: 13px; }
 
+/* ---------- Calendrier (page par-dessus) ---------- */
+
+.calque {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(10, 25, 32, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow-y: auto;
+  padding: 12px;
+}
+/* Sans cette ligne, « display: flex » ci-dessus empêcherait de cacher le calque. */
+.calque[hidden] { display: none; }
+.panneau-calque {
+  background: var(--fond);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 560px;
+  padding: 14px;
+  margin: auto 0;
+}
+.entete-calque { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.entete-calque h2 { flex: 1; margin: 0; text-align: center; text-transform: capitalize; }
+.nav-cal, .fermer-cal {
+  border: 1px solid var(--bordure);
+  background: var(--carte);
+  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--texte);
+}
+.fermer-cal { font-size: 16px; }
+
+.jours-semaine, .grille-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.jours-semaine div { text-align: center; font-size: 12px; color: var(--texte-doux); padding-bottom: 4px; }
+.case-cal {
+  position: relative;
+  aspect-ratio: 1;
+  max-width: 100%;
+  border: 1px solid var(--bordure);
+  border-radius: 8px;
+  background: var(--carte);
+  color: var(--texte);
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
+  cursor: pointer;
+  min-width: 0;
+}
+.case-cal.vide { border: none; background: none; cursor: default; }
+.case-cal .num-jour { font-size: 11px; color: var(--texte-doux); }
+.case-cal .nb-cartes { font-size: 15px; font-weight: 700; align-self: center; }
+
+/* Intensité : plus il y a de cartes, plus la case est foncée. */
+.case-cal.futur.niveau-1 { background: #e3edf8; }
+.case-cal.futur.niveau-2 { background: #b9d3f0; }
+.case-cal.futur.niveau-3 { background: #7fb0e6; }
+.case-cal.passe.niveau-1 { background: #e4f2ea; }
+.case-cal.passe.niveau-2 { background: #bfe0cc; }
+.case-cal.passe.niveau-3 { background: #8ccaa5; }
+.case-cal.passe.niveau-0 { opacity: 0.55; }
+
+.case-cal.aujourdhui { border: 2px solid var(--accent); }
+.case-cal.choisie { box-shadow: 0 0 0 3px var(--rouge); }
+
+.point-echeance {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rouge);
+}
+.point-echeance.legende { position: static; display: inline-block; }
+
+.legende-cal { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--texte-doux); margin: 10px 0; }
+.legende-cal span { display: inline-flex; align-items: center; gap: 5px; }
+.pastille-legende { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.pastille-legende.fait { background: #bfe0cc; }
+.pastille-legende.prevu { background: #b9d3f0; }
+
 /* ---------- Cours ---------- */
 
 .texte-cours { line-height: 1.6; }

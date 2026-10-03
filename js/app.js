@@ -557,6 +557,164 @@ const App = {
     });
   },
 
+  // ---------- Calendrier (page qui s'ouvre par-dessus) ----------
+
+  /* Rassemble une fois pour toutes ce qu'affiche le calendrier :
+     - prévu : les cartes en jeu à leur prochaine date (le retard est ramené à aujourd'hui) ;
+     - fait  : les révisions réellement passées (les reprises dans une même session
+               ne comptent pas, ce sont des répétitions de la même carte) ;
+     - échéances : les dates de contrôle des paquets. */
+  async ouvrirCalendrier() {
+    const jour = Planification.jourAujourdhui();
+    const paquets = await Donnees.tous('paquets');
+    const parId = {};
+    paquets.forEach(p => { parId[p.id] = p; });
+    const cartes = await Donnees.tous('cartes');
+    const carteParId = {};
+    cartes.forEach(c => { carteParId[c.id] = c; });
+    const revisions = await Donnees.tous('revisions');
+
+    const prevu = {};
+    cartes.forEach(c => {
+      const p = parId[c.paquetId];
+      if (!p || p.archive || !c.etat || !Planification.carteEnJeu(c, p)) return;
+      this.ajouterAuJour(prevu, c.etat.dueLe < jour ? jour : c.etat.dueLe, p.nom);
+    });
+
+    const fait = {};
+    revisions.forEach(r => {
+      if (r.planifie === false) return;
+      const c = carteParId[r.carteId];
+      const p = c ? parId[c.paquetId] : null;
+      this.ajouterAuJour(fait, r.date.slice(0, 10), p ? p.nom : 'Paquet supprimé');
+    });
+
+    const echeances = {};
+    paquets.forEach(p => {
+      if (!p.echeance || p.archive) return;
+      if (!echeances[p.echeance]) echeances[p.echeance] = [];
+      echeances[p.echeance].push(p.nom);
+    });
+
+    this.calendrier = {
+      jour, prevu, fait, echeances,
+      annee: Number(jour.slice(0, 4)),
+      mois: Number(jour.slice(5, 7)) - 1,
+      choisi: jour
+    };
+
+    let calque = document.getElementById('calque-calendrier');
+    if (!calque) {
+      calque = document.createElement('div');
+      calque.id = 'calque-calendrier';
+      calque.className = 'calque';
+      document.body.appendChild(calque);
+      // Un clic sur le fond (hors du panneau) ferme la page.
+      calque.addEventListener('click', e => { if (e.target === calque) this.fermerCalendrier(); });
+    }
+    calque.hidden = false;
+    document.body.style.overflow = 'hidden';   // la page du dessous ne défile plus
+    this.toucheEchap = e => { if (e.key === 'Escape') this.fermerCalendrier(); };
+    document.addEventListener('keydown', this.toucheEchap);
+    this.rendreCalendrier();
+  },
+
+  fermerCalendrier() {
+    const calque = document.getElementById('calque-calendrier');
+    if (calque) calque.hidden = true;
+    document.body.style.overflow = '';
+    if (this.toucheEchap) document.removeEventListener('keydown', this.toucheEchap);
+  },
+
+  ajouterAuJour(table, date, nomPaquet) {
+    if (!table[date]) table[date] = { total: 0, parPaquet: {} };
+    table[date].total++;
+    table[date].parPaquet[nomPaquet] = (table[date].parPaquet[nomPaquet] || 0) + 1;
+  },
+
+  rendreCalendrier() {
+    const k = this.calendrier;
+    // On travaille en UTC pour éviter les surprises du changement d'heure.
+    const premier = new Date(Date.UTC(k.annee, k.mois, 1));
+    const nombreDeJours = new Date(Date.UTC(k.annee, k.mois + 1, 0)).getUTCDate();
+    const decalage = (premier.getUTCDay() + 6) % 7;   // la semaine commence le lundi
+    const titre = premier.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+    const cases = [];
+    for (let i = 0; i < decalage; i++) cases.push('<div class="case-cal vide"></div>');
+    for (let d = 1; d <= nombreDeJours; d++) {
+      const date = k.annee + '-' + String(k.mois + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+      const passe = date < k.jour;
+      const info = passe ? k.fait[date] : k.prevu[date];
+      const nombre = info ? info.total : 0;
+      const niveau = nombre === 0 ? 0 : nombre < 10 ? 1 : nombre < 20 ? 2 : 3;
+      const classes = ['case-cal', passe ? 'passe' : 'futur', 'niveau-' + niveau];
+      if (date === k.jour) classes.push('aujourdhui');
+      if (date === k.choisi) classes.push('choisie');
+      cases.push(`<button class="${classes.join(' ')}" data-date-cal="${date}">
+        <span class="num-jour">${d}</span>
+        <span class="nb-cartes">${nombre > 0 ? nombre : ''}</span>
+        ${k.echeances[date] ? '<span class="point-echeance"></span>' : ''}
+      </button>`);
+    }
+
+    document.getElementById('calque-calendrier').innerHTML = `
+      <div class="panneau-calque" role="dialog" aria-label="Calendrier des révisions">
+        <div class="entete-calque">
+          <button class="nav-cal" data-mois="-1" aria-label="Mois précédent">‹</button>
+          <h2>${titre}</h2>
+          <button class="nav-cal" data-mois="1" aria-label="Mois suivant">›</button>
+          <button class="fermer-cal" data-fermer-calendrier="1" aria-label="Fermer">✕</button>
+        </div>
+        <div class="jours-semaine">${['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'].map(j => `<div>${j}</div>`).join('')}</div>
+        <div class="grille-cal">${cases.join('')}</div>
+        <div class="legende-cal">
+          <span><i class="pastille-legende fait"></i> faites</span>
+          <span><i class="pastille-legende prevu"></i> prévues</span>
+          <span><i class="point-echeance legende"></i> contrôle / échéance</span>
+        </div>
+        <div id="detail-cal">${this.detailCalendrier()}</div>
+        <p class="doux">Les jours à venir sont une prévision : elle bouge à chaque révision (une carte
+        ratée revient plus tôt, une carte réussie part plus loin), et les nouvelles cartes n'y sont
+        pas comptées. Plus c'est loin, moins c'est précis.</p>
+      </div>`;
+
+    const calque = document.getElementById('calque-calendrier');
+    calque.querySelector('[data-fermer-calendrier]').addEventListener('click', () => this.fermerCalendrier());
+    calque.querySelectorAll('[data-mois]').forEach(b => b.addEventListener('click', () => {
+      k.mois += Number(b.dataset.mois);
+      if (k.mois < 0) { k.mois = 11; k.annee--; }
+      if (k.mois > 11) { k.mois = 0; k.annee++; }
+      this.rendreCalendrier();
+    }));
+    calque.querySelectorAll('[data-date-cal]').forEach(b => b.addEventListener('click', () => {
+      k.choisi = b.dataset.dateCal;
+      this.rendreCalendrier();
+    }));
+  },
+
+  /* Le détail du jour choisi, sous la grille. */
+  detailCalendrier() {
+    const k = this.calendrier;
+    if (!k.choisi) return '';
+    const passe = k.choisi < k.jour;
+    const info = passe ? k.fait[k.choisi] : k.prevu[k.choisi];
+    const echeances = k.echeances[k.choisi] || [];
+    let html = `<h2>${Planification.jourLisible(k.choisi)}${k.choisi === k.jour ? " — aujourd'hui" : ''}</h2>`;
+    echeances.forEach(nom => {
+      html += `<div class="avertissement">Échéance : ${this.h(nom)}</div>`;
+    });
+    if (!info) {
+      html += `<p class="doux">${passe ? 'Aucune révision ce jour-là.' : 'Rien de prévu ce jour-là.'}</p>`;
+      return html;
+    }
+    const noms = Object.keys(info.parPaquet).sort((a, b) => info.parPaquet[b] - info.parPaquet[a]);
+    html += `<p class="doux">${passe ? 'Cartes révisées' : (k.choisi === k.jour ? 'À revoir (retard compris)' : 'Prévues')}</p>`;
+    html += noms.map(nom => `<div class="ligne"><div class="grandit">${this.h(nom)}</div><strong>${info.parPaquet[nom]}</strong></div>`).join('');
+    html += `<div class="ligne"><div class="grandit"><strong>Total</strong></div><strong>${info.total}</strong></div>`;
+    return html;
+  },
+
   // ---------- Écran : le cours d'un paquet ----------
 
   async ecranCours() {
@@ -958,6 +1116,7 @@ const App = {
       </div>
       <p class="doux">Touche une barre pour voir de quels paquets viennent ces cartes.</p>
       <div id="detail-jour"></div>
+      <button class="bouton secondaire large" data-calendrier="1">Voir le calendrier</button>
     </div>
 
     <div class="bloc">
@@ -989,6 +1148,8 @@ const App = {
 
     this.afficher('Suivi', html);
     this.brancher('[data-ouvrir-carte]', 'click', e => this.aller('carte', { carteId: e.currentTarget.dataset.ouvrirCarte }));
+
+    this.brancher('[data-calendrier]', 'click', () => this.ouvrirCalendrier());
 
     this.brancher('[data-detail-jour]', 'click', e => {
       const index = Number(e.currentTarget.dataset.detailJour);
