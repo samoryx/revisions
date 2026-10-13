@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v14';  // v14 : calendrier du mois (révisions faites et prévues)
+const VERSION = 'revisions-v15';  // v15 : suppressions synchronisées, réglages partagés, sortie du signalement, archivage et remise à zéro, tri par arrivée
 
 const FICHIERS = [
   './',

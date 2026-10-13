@@ -10,7 +10,8 @@
    - revisions : le JOURNAL, une ligne par réponse donnée. Il ne
                  s'efface jamais : c'est lui la vraie mémoire de
                  l'app, l'état des cartes en est recalculé.
-   - reglages  : un seul objet de configuration
+   - reglages  : l'objet de configuration, et le REGISTRE DES
+                 SUPPRESSIONS (voir plus bas)
    =========================================================== */
 
 const Donnees = (function () {
@@ -24,10 +25,14 @@ const Donnees = (function () {
     nouvellesParJour: 10,       // combien de cartes jamais vues par jour au maximum
     retentionCible: 0.9,        // 0,9 = on accepte d'oublier 1 carte sur 10 au moment de la révision
     intervalleMaxJours: 60,     // plafond : utile tant qu'il peut y avoir des contrôles surprises
-    seuilSangsue: 6,            // au-delà de X échecs, la carte est signalée comme mal construite
+    seuilSangsue: 6,            // à partir de X échecs, la carte est signalée (« elle résiste »)
     nomAppareil: 'PC',
     derniereSauvegarde: null
   };
+
+  // Les réglages qui voyagent avec la synchronisation. Le nom de l'appareil
+  // n'en fait pas partie : chaque appareil garde le sien.
+  const REGLAGES_PARTAGES = ['nouvellesParJour', 'retentionCible', 'intervalleMaxJours', 'seuilSangsue'];
 
   function ouvrir() {
     if (base) return Promise.resolve(base);
@@ -132,6 +137,73 @@ const Donnees = (function () {
     return ecrire('reglages', Object.assign(actuels, modifications));
   }
 
+  /* ---------- Registre des suppressions ----------
+
+     Sans lui, la synchronisation ferait revenir tout ce que tu supprimes :
+     elle additionne les données des deux appareils, et un paquet absent
+     d'un côté ressemble à un paquet « nouveau », pas à un paquet supprimé.
+     On note donc chaque suppression : { identifiant: { magasin, supprimeLe } }.
+     Le registre voyage avec la synchronisation ; une fois noté, un élément
+     ne revient plus jamais, sur aucun appareil.
+
+     Il est rangé dans le magasin des réglages, sous l'identifiant
+     « suppressions » : ça évite de changer la structure de la base. */
+
+  async function suppressions() {
+    const enregistre = await lire('reglages', 'suppressions');
+    return (enregistre && enregistre.liste) || {};
+  }
+
+  async function ecrireSuppressions(liste) {
+    return ecrire('reglages', { id: 'suppressions', liste: liste });
+  }
+
+  /* Efface pour de bon, ici, tout ce que le registre désigne : paquets,
+     cartes, et les révisions des cartes effacées. Renvoie le nombre
+     d'éléments effacés. */
+  async function appliquerSuppressions(liste) {
+    let effaces = 0;
+    const identifiant = function (o) { return o.id; };
+    for (const magasin of ['paquets', 'cartes']) {
+      const ids = (await tous(magasin)).filter(function (o) { return liste[o.id]; }).map(identifiant);
+      await supprimerPlusieurs(magasin, ids);
+      effaces += ids.length;
+    }
+    const revisions = (await tous('revisions')).filter(function (r) { return liste[r.carteId]; }).map(identifiant);
+    await supprimerPlusieurs('revisions', revisions);
+    return effaces;
+  }
+
+  async function supprimerPlusieurs(magasin, ids) {
+    if (ids.length === 0) return;
+    const b = await ouvrir();
+    const transaction = b.transaction(magasin, 'readwrite');
+    const m = transaction.objectStore(magasin);
+    ids.forEach(function (id) { m.delete(id); });
+    return transactionTerminee(transaction);
+  }
+
+  /* Supprime des cartes (et leurs révisions), en le notant au registre. */
+  async function supprimerCartes(ids) {
+    const liste = await suppressions();
+    const maintenant = new Date().toISOString();
+    ids.forEach(function (id) { liste[id] = { magasin: 'cartes', supprimeLe: maintenant }; });
+    await ecrireSuppressions(liste);
+    await appliquerSuppressions(liste);
+  }
+
+  /* Supprime un paquet, toutes ses cartes et leurs révisions, en le notant au registre. */
+  async function supprimerPaquet(paquetId) {
+    const liste = await suppressions();
+    const maintenant = new Date().toISOString();
+    liste[paquetId] = { magasin: 'paquets', supprimeLe: maintenant };
+    (await tous('cartes')).forEach(function (c) {
+      if (c.paquetId === paquetId) liste[c.id] = { magasin: 'cartes', supprimeLe: maintenant };
+    });
+    await ecrireSuppressions(liste);
+    await appliquerSuppressions(liste);
+  }
+
   function nouvelId() {
     // crypto.randomUUID donne un identifiant unique, indispensable pour que
     // les données du PC et celles du téléphone puissent fusionner sans collision.
@@ -149,7 +221,13 @@ const Donnees = (function () {
     revisionsDeLaCarte: revisionsDeLaCarte,
     reglages: reglages,
     majReglages: majReglages,
+    suppressions: suppressions,
+    ecrireSuppressions: ecrireSuppressions,
+    appliquerSuppressions: appliquerSuppressions,
+    supprimerCartes: supprimerCartes,
+    supprimerPaquet: supprimerPaquet,
     nouvelId: nouvelId,
-    REGLAGES_PAR_DEFAUT: REGLAGES_PAR_DEFAUT
+    REGLAGES_PAR_DEFAUT: REGLAGES_PAR_DEFAUT,
+    REGLAGES_PARTAGES: REGLAGES_PARTAGES
   };
 })();

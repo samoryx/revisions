@@ -54,30 +54,79 @@ const App = {
      Ne s'exécute qu'une fois par appareil. */
   async mettreANiveau() {
     const reglages = await Donnees.reglages();
-    if ((reglages.versionDonnees || 1) >= 2) return;
-    // Version 2 : les sections. Chaque paquet reçoit la sienne, puis toutes
-    // les dates sont recalculées (la dernière révision avant une échéance
-    // tombe désormais la veille, et non plus le jour même).
-    const paquets = await Donnees.tous('paquets');
-    for (const paquet of paquets) {
-      if (!paquet.section) {
-        paquet.section = Planification.sectionDe(paquet);
-        paquet.retentionEntretien = Planification.RETENTION_ENTRETIEN_DEFAUT;
-        paquet.modifieLe = new Date().toISOString();
-        await Donnees.ecrire('paquets', paquet);
+    const version = reglages.versionDonnees || 1;
+    if (version < 2) {
+      // Version 2 : les sections. Chaque paquet reçoit la sienne, puis toutes
+      // les dates sont recalculées (la dernière révision avant une échéance
+      // tombe désormais la veille, et non plus le jour même).
+      const paquets = await Donnees.tous('paquets');
+      for (const paquet of paquets) {
+        if (!paquet.section) {
+          paquet.section = Planification.sectionDe(paquet);
+          paquet.retentionEntretien = Planification.RETENTION_ENTRETIEN_DEFAUT;
+          paquet.modifieLe = new Date().toISOString();
+          await Donnees.ecrire('paquets', paquet);
+        }
       }
-      await Planification.rafraichirPaquet(paquet, reglages);
     }
-    await Donnees.majReglages({ versionDonnees: 2 });
+    if (version < 3) {
+      // Version 3 : une carte signalée peut sortir du signalement. On rejoue
+      // tous les journaux pour que les cartes déjà signalées en profitent.
+      await Planification.rafraichirTout(reglages);
+      await Donnees.majReglages({ versionDonnees: 3 });
+    }
   },
 
   /* Change la section d'un paquet et recalcule ses cartes. */
   async changerSection(paquetId, section) {
     const paquet = await Donnees.lire('paquets', paquetId);
+    const maintenant = new Date().toISOString();
+    // Entrer dans une section compte comme une arrivée (ordre de l'accueil).
+    if (Planification.sectionDe(paquet) !== section) paquet.sectionDepuis = maintenant;
     paquet.section = section;
     // À chaque entrée en Entretenir, la rétention repart à 85 %.
     if (section === 'entretenir') paquet.retentionEntretien = Planification.RETENTION_ENTRETIEN_DEFAUT;
+    paquet.modifieLe = maintenant;
+    await Donnees.ecrire('paquets', paquet);
+    await Planification.rafraichirPaquet(paquet, await Donnees.reglages());
+  },
+
+  /* Archive un paquet. Sa section n'est plus affichée (« Archivé »), mais
+     elle est gardée pour « Remettre comme avant ». */
+  async archiverPaquet(paquetId) {
+    const paquet = await Donnees.lire('paquets', paquetId);
+    paquet.archive = true;
     paquet.modifieLe = new Date().toISOString();
+    await Donnees.ecrire('paquets', paquet);
+  },
+
+  /* « Remettre comme avant » : même section, même historique, même place
+     dans les listes, comme si le paquet n'avait jamais été archivé. */
+  async remettreCommeAvant(paquetId) {
+    const paquet = await Donnees.lire('paquets', paquetId);
+    paquet.archive = false;
+    paquet.modifieLe = new Date().toISOString();
+    await Donnees.ecrire('paquets', paquet);
+  },
+
+  /* « Repartir de zéro » : le paquet redevient un paquet qui vient d'arriver.
+     Ses cartes redeviennent jamais vues (seules comptent désormais les
+     révisions faites après cette date) ; leur contenu, le cours, le nom et
+     l'échéance ne bougent pas. Les révisions passées restent dans le journal,
+     comme historique. */
+  async repartirDeZero(paquetId) {
+    const paquet = await Donnees.lire('paquets', paquetId);
+    const maintenant = new Date().toISOString();
+    const jour = Planification.jourAujourdhui();
+    paquet.reinitialisations = (paquet.reinitialisations || []).concat(maintenant);
+    paquet.archive = false;
+    // Même règle qu'un import : Apprendre s'il y a une échéance à venir, Comprendre sinon.
+    paquet.section = paquet.echeance && paquet.echeance >= jour ? 'apprendre' : 'comprendre';
+    paquet.retentionEntretien = Planification.RETENTION_ENTRETIEN_DEFAUT;
+    paquet.suggestionIgnoree = null;
+    paquet.arriveeLe = maintenant;
+    paquet.sectionDepuis = maintenant;
+    paquet.modifieLe = maintenant;
     await Donnees.ecrire('paquets', paquet);
     await Planification.rafraichirPaquet(paquet, await Donnees.reglages());
   },
@@ -148,7 +197,10 @@ const App = {
     const brouillons = cartes.filter(c => c.statut === 'brouillon');
     const sangsues = actives.filter(c => Planification.estSangsue(c, reglages));
     const total = selection.total;
-    const visibles = paquets.filter(p => !p.archive);
+    // Dans chaque section : par ordre d'arrivée dans la section, le plus ancien en haut.
+    const visibles = paquets
+      .filter(p => !p.archive)
+      .sort((a, b) => (Planification.entreeDansSection(a) < Planification.entreeDansSection(b) ? -1 : 1));
 
     // Pour chaque paquet : sa part de la sélection du jour (les nombres
     // s'additionnent et redonnent le total), et les cartes qui attendent leur tour.
@@ -213,12 +265,13 @@ const App = {
     if (sangsues.length > 0) {
       html += `<div class="bloc">
         <strong class="orange">${sangsues.length} carte${sangsues.length > 1 ? 's' : ''} qui résiste${sangsues.length > 1 ? 'nt' : ''}</strong>
-        <p class="doux">Au-delà de ${reglages.seuilSangsue} échecs, le problème vient presque toujours de la carte (trop longue, deux idées en une), pas de ta mémoire. À réécrire ou à découper.</p>
+        <p class="doux">Au moins ${reglages.seuilSangsue} échecs. La cause n'est pas forcément la carte : la liste donne les causes possibles, à vérifier carte par carte.</p>
         <button class="bouton secondaire large" data-va="stats">Voir lesquelles</button>
       </div>`;
     }
 
-    // Les autres paquets, rangés par section, dans l'ordre de priorité.
+    // Les autres paquets, rangés par section, dans l'ordre de priorité ;
+    // dans une section, par ordre d'arrivée (la liste est déjà triée).
     ['apprendre', 'comprendre', 'entretenir'].forEach(section => {
       const liste = visibles.filter(p => !Planification.estUrgent(p, jour) && Planification.sectionDe(p) === section);
       if (liste.length === 0) return;
@@ -243,10 +296,7 @@ const App = {
       await this.rendre();
     });
     this.brancher('[data-archiver-paquet]', 'click', async e => {
-      const paquet = await Donnees.lire('paquets', e.currentTarget.dataset.archiverPaquet);
-      paquet.archive = true;
-      paquet.modifieLe = new Date().toISOString();
-      await Donnees.ecrire('paquets', paquet);
+      await this.archiverPaquet(e.currentTarget.dataset.archiverPaquet);
       await this.rendre();
     });
     this.brancher('[data-ignorer]', 'click', async e => {
@@ -371,24 +421,30 @@ const App = {
       <button class="bouton secondaire large" data-nouveau-paquet="1">Créer un paquet vide</button>
     </div>`;
 
+    // Par ordre d'arrivée dans l'app, le plus ancien en haut ; les archivés à part.
+    const tries = paquets.slice().sort((a, b) => (Planification.arriveeDe(a) < Planification.arriveeDe(b) ? -1 : 1));
+    const actifs = tries.filter(p => !p.archive);
+    const archives = tries.filter(p => p.archive);
+    const ligne = paquet => {
+      const duPaquet = cartes.filter(c => c.paquetId === paquet.id);
+      const brouillons = duPaquet.filter(c => c.statut === 'brouillon').length;
+      const fois = (paquet.reinitialisations || []).length;
+      return `<div class="ligne" data-ouvrir-paquet="${paquet.id}" style="cursor:pointer">
+        <div class="grandit">
+          <div class="titre-ligne">${this.h(paquet.nom)}</div>
+          <div class="doux">${this.h(paquet.matiere || 'sans matière')} · ${duPaquet.length} carte${duPaquet.length > 1 ? 's' : ''}${paquet.echeance ? ' · échéance ' + Planification.jourLisible(paquet.echeance) : ''}${fois > 0 ? ' · réinitialisé ' + fois + ' fois' : ''}</div>
+        </div>
+        ${brouillons > 0 ? `<span class="pastille alerte">${brouillons} à valider</span>` : ''}
+        <span class="pastille section-${paquet.archive ? 'archive' : Planification.sectionDe(paquet)}">${Planification.nomSection(paquet)}</span>
+        <span class="doux">›</span>
+      </div>`;
+    };
+
     if (paquets.length === 0) {
       html += '<p class="doux">Aucun paquet pour le moment.</p>';
     } else {
-      html += '<div class="bloc">';
-      paquets.forEach(paquet => {
-        const duPaquet = cartes.filter(c => c.paquetId === paquet.id);
-        const brouillons = duPaquet.filter(c => c.statut === 'brouillon').length;
-        html += `<div class="ligne" data-ouvrir-paquet="${paquet.id}" style="cursor:pointer">
-          <div class="grandit">
-            <div class="titre-ligne">${this.h(paquet.nom)}${paquet.archive ? ' <span class="doux">(archivé)</span>' : ''}</div>
-            <div class="doux">${this.h(paquet.matiere || 'sans matière')} · ${duPaquet.length} carte${duPaquet.length > 1 ? 's' : ''}${paquet.echeance ? ' · échéance ' + Planification.jourLisible(paquet.echeance) : ''}</div>
-          </div>
-          ${brouillons > 0 ? `<span class="pastille alerte">${brouillons} à valider</span>` : ''}
-          <span class="pastille section-${Planification.sectionDe(paquet)}">${Planification.SECTIONS[Planification.sectionDe(paquet)].nom}</span>
-          <span class="doux">›</span>
-        </div>`;
-      });
-      html += '</div>';
+      if (actifs.length > 0) html += '<div class="bloc">' + actifs.map(ligne).join('') + '</div>';
+      if (archives.length > 0) html += '<h2>Archivés</h2><div class="bloc">' + archives.map(ligne).join('') + '</div>';
     }
 
     this.afficher('Paquets', html);
@@ -399,7 +455,7 @@ const App = {
       const paquet = {
         id: Donnees.nouvelId(), nom: 'Nouveau paquet', matiere: '', echeance: null,
         section: 'comprendre', retentionEntretien: Planification.RETENTION_ENTRETIEN_DEFAUT,
-        retentionCible: null, archive: false, creeLe: maintenant, modifieLe: maintenant
+        retentionCible: null, archive: false, creeLe: maintenant, sectionDepuis: maintenant, modifieLe: maintenant
       };
       await Donnees.ecrire('paquets', paquet);
       await this.aller('paquet', { paquetId: paquet.id });
@@ -421,22 +477,28 @@ const App = {
     const section = Planification.sectionDe(paquet);
     const enJeu = actives.filter(c => Planification.carteEnJeu(c, paquet)).length;
     const retention = paquet.retentionEntretien || Planification.RETENTION_ENTRETIEN_DEFAUT;
+    const fois = (paquet.reinitialisations || []).length;
 
     let html = `<div class="bloc">
       <h2>Section</h2>
-      <div class="segments">
-        ${Object.keys(Planification.SECTIONS).map(cle =>
-          `<button data-section="${cle}" class="${cle === section ? 'actif' : ''}">${Planification.SECTIONS[cle].nom}</button>`).join('')}
-      </div>
-      <p class="doux">${Planification.SECTIONS[section].description}</p>
-      ${section === 'entretenir' ? `
-        <label>Rétention visée pour ce paquet</label>
+      ${paquet.archive ? `
+        <p><span class="pastille section-archive">Archivé</span></p>
+        <p class="doux">Aucune carte en jeu : ce paquet ne revient plus en session. Réactive-le pour le reprendre.</p>
+        <button class="bouton large" data-reactiver-paquet="1">Réactiver</button>` : `
         <div class="segments">
-          ${[0.8, 0.85, 0.9].map(valeur =>
-            `<button data-retention="${valeur}" class="${Math.abs(valeur - retention) < 0.001 ? 'actif' : ''}">${Math.round(valeur * 100)} %</button>`).join('')}
+          ${Object.keys(Planification.SECTIONS).map(cle =>
+            `<button data-section="${cle}" class="${cle === section ? 'actif' : ''}">${Planification.SECTIONS[cle].nom}</button>`).join('')}
         </div>
-        <p class="doux">Par rapport à 90 %, les intervalles sont environ 1,9 fois plus longs à 85 %, et 3,3 fois plus longs à 80 %. Moins de révisions, mais davantage d'oublis à chaque passage.</p>` : ''}
-      <p><strong>${enJeu}</strong> carte${enJeu > 1 ? 's' : ''} en jeu sur ${actives.length} active${actives.length > 1 ? 's' : ''}.</p>
+        <p class="doux">${Planification.SECTIONS[section].description}</p>
+        ${section === 'entretenir' ? `
+          <label>Rétention visée pour ce paquet</label>
+          <div class="segments">
+            ${[0.8, 0.85, 0.9].map(valeur =>
+              `<button data-retention="${valeur}" class="${Math.abs(valeur - retention) < 0.001 ? 'actif' : ''}">${Math.round(valeur * 100)} %</button>`).join('')}
+          </div>
+          <p class="doux">Par rapport à 90 %, les intervalles sont environ 1,9 fois plus longs à 85 %, et 3,3 fois plus longs à 80 %. Moins de révisions, mais davantage d'oublis à chaque passage.</p>` : ''}
+        <p><strong>${enJeu}</strong> carte${enJeu > 1 ? 's' : ''} en jeu sur ${actives.length} active${actives.length > 1 ? 's' : ''}.</p>`}
+      ${fois > 0 ? `<p class="doux">Réinitialisé ${fois} fois (dernière fois le ${new Date(Planification.debutDuCycle(paquet)).toLocaleDateString('fr-FR')}).</p>` : ''}
     </div>
 
     <div class="bloc">
@@ -456,7 +518,9 @@ const App = {
       <input type="date" id="echeance-paquet" value="${paquet.echeance || ''}">
       <p class="doux">Aucune révision ne sera planifiée après cette date : la dernière tombera la veille.</p>
       <button class="bouton" data-enregistrer-paquet="1">Enregistrer</button>
-      <button class="bouton secondaire" data-archiver="1">${paquet.archive ? 'Réactiver' : 'Archiver'}</button>
+      ${paquet.archive
+        ? '<button class="bouton secondaire" data-reactiver-paquet="1">Réactiver</button>'
+        : '<button class="bouton secondaire" data-archiver="1">Archiver</button>'}
     </div>
 
     <div class="bloc">
@@ -512,11 +576,11 @@ const App = {
     });
 
     this.brancher('[data-archiver]', 'click', async () => {
-      paquet.archive = !paquet.archive;
-      paquet.modifieLe = new Date().toISOString();
-      await Donnees.ecrire('paquets', paquet);
+      await this.archiverPaquet(paquet.id);
       await this.rendre();
     });
+
+    this.brancher('[data-reactiver-paquet]', 'click', () => this.ouvrirReactivation(paquet.id));
 
     this.brancher('[data-ouvrir-cours]', 'click', () => this.aller('cours', { paquetId: paquet.id }));
 
@@ -550,9 +614,8 @@ const App = {
     });
 
     this.brancher('[data-supprimer-paquet]', 'click', async () => {
-      if (!confirm('Supprimer « ' + paquet.nom + ' » et ses ' + cartes.length + ' cartes ? Les révisions déjà faites seront perdues.')) return;
-      for (const carte of cartes) await Donnees.supprimer('cartes', carte.id);
-      await Donnees.supprimer('paquets', paquet.id);
+      if (!confirm('Supprimer « ' + paquet.nom + ' » et ses ' + cartes.length + ' cartes ? Les révisions déjà faites seront perdues. La suppression vaudra aussi pour l\'autre appareil, à la prochaine synchronisation.')) return;
+      await Donnees.supprimerPaquet(paquet.id);
       await this.aller('paquets', {}, true);
     });
   },
@@ -586,7 +649,11 @@ const App = {
       if (r.planifie === false) return;
       const c = carteParId[r.carteId];
       const p = c ? parId[c.paquetId] : null;
-      this.ajouterAuJour(fait, r.date.slice(0, 10), p ? p.nom : 'Paquet supprimé');
+      let nom = p ? p.nom : 'Paquet supprimé';
+      // Révisions d'un cycle passé (paquet réinitialisé depuis) : comptées à part.
+      const avant = p ? Planification.reinitialisationApres(p, r.date) : 0;
+      if (avant > 0) nom += ' — avant la ' + this.ordinal(avant) + ' réinitialisation';
+      this.ajouterAuJour(fait, r.date.slice(0, 10), nom);
     });
 
     const echeances = {};
@@ -715,6 +782,122 @@ const App = {
     return html;
   },
 
+  // ---------- Fenêtre par-dessus (fond flouté) ----------
+
+  ouvrirFenetre(html) {
+    let calque = document.getElementById('calque-fenetre');
+    if (!calque) {
+      calque = document.createElement('div');
+      calque.id = 'calque-fenetre';
+      calque.className = 'calque';
+      document.body.appendChild(calque);
+      // Un clic sur le fond (hors du panneau) ferme la fenêtre.
+      calque.addEventListener('click', e => { if (e.target === calque) this.fermerFenetre(); });
+    }
+    calque.innerHTML = `<div class="panneau-calque" role="dialog" aria-modal="true">${html}</div>`;
+    calque.hidden = false;
+    document.body.style.overflow = 'hidden';
+    if (!this.toucheEchapFenetre) {
+      this.toucheEchapFenetre = e => { if (e.key === 'Escape') this.fermerFenetre(); };
+      document.addEventListener('keydown', this.toucheEchapFenetre);
+    }
+    calque.querySelectorAll('[data-fermer-fenetre]').forEach(b => b.addEventListener('click', () => this.fermerFenetre()));
+    return calque;
+  },
+
+  fermerFenetre() {
+    const calque = document.getElementById('calque-fenetre');
+    if (calque) { calque.hidden = true; calque.innerHTML = ''; }
+    document.body.style.overflow = '';
+    if (this.toucheEchapFenetre) {
+      document.removeEventListener('keydown', this.toucheEchapFenetre);
+      this.toucheEchapFenetre = null;
+    }
+  },
+
+  ordinal(n) {
+    return n === 1 ? '1re' : n + 'e';
+  },
+
+  /* Réactiver un paquet archivé : deux choix, puis une alerte avant de
+     repartir de zéro. Les nombres affichés sont comptés sur ses cartes. */
+  async ouvrirReactivation(paquetId) {
+    const paquet = await Donnees.lire('paquets', paquetId);
+    const reglages = await Donnees.reglages();
+    const jour = Planification.jourAujourdhui();
+    const actives = (await Donnees.tous('cartes')).filter(c => c.paquetId === paquet.id && c.statut === 'active');
+    const commeAvant = Object.assign({}, paquet, { archive: false });
+    const enRetard = actives.filter(c => Planification.carteEnJeu(c, commeAvant) && Planification.estDue(c, jour)).length;
+    const vues = actives.filter(c => c.etat).length;
+    const acquises = actives.filter(c => c.etat && c.etat.acquise).length;
+    const signalees = actives.filter(c => Planification.estSangsue(c, reglages)).length;
+    const numero = (paquet.reinitialisations || []).length + 1;
+    const sectionZero = paquet.echeance && paquet.echeance >= jour ? 'apprendre' : 'comprendre';
+    const rythme = sectionZero === 'apprendre'
+      ? `réparties d'ici le ${Planification.jourLisible(paquet.echeance)} pour être toutes vues 2 jours avant (quota de la section Apprendre)`
+      : `au plus ${reglages.nouvellesParJour} nouvelles cartes par jour, partagées avec tes autres paquets`;
+    const s = n => (n > 1 ? 's' : '');
+    const entete = titre => `<div class="entete-calque">
+        <h2 class="titre-fenetre">${titre}</h2>
+        <button class="fermer-cal" data-fermer-fenetre="1" aria-label="Fermer">✕</button>
+      </div>`;
+
+    const choix = () => {
+      const calque = this.ouvrirFenetre(`
+        ${entete('Réactiver « ' + this.h(paquet.nom) + ' »')}
+        <div class="bloc">
+          <button class="bouton large" data-comme-avant="1">Remettre comme avant</button>
+          <p class="doux">Section ${Planification.SECTIONS[Planification.sectionDe(paquet)].nom}, avec tout son historique et sa place dans les listes.
+          ${enRetard} carte${s(enRetard)} à revoir dès aujourd'hui (retard compris).</p>
+        </div>
+        <div class="bloc">
+          <button class="bouton secondaire large" data-repartir-zero="1">Repartir de zéro</button>
+          <p class="doux">Comme un paquet qui vient d'arriver : ses ${vues} carte${s(vues)} déjà vue${s(vues)} redevien${vues > 1 ? 'nent' : 't'} jamais vue${s(vues)} et reviennent au rythme des nouvelles cartes.
+          Même celles que tu sais encore refont tout le parcours (2 j → 11 j → 46 j…).</p>
+        </div>
+        <button class="bouton secondaire large" data-fermer-fenetre="1">Annuler</button>`);
+      calque.querySelector('[data-comme-avant]').addEventListener('click', async e => {
+        e.currentTarget.disabled = true;
+        await this.remettreCommeAvant(paquet.id);
+        this.fermerFenetre();
+        await this.rendre();
+      });
+      calque.querySelector('[data-repartir-zero]').addEventListener('click', alerte);
+    };
+
+    const alerte = () => {
+      const calque = this.ouvrirFenetre(`
+        ${entete('Repartir de zéro : es-tu sûr ?')}
+        <div class="avertissement">C'est définitif : il n'y a pas de retour en arrière.</div>
+        <p><strong>Ce qui va se passer</strong></p>
+        <ul class="liste-fenetre">
+          <li>${vues} carte${s(vues)} déjà vue${s(vues)} redevien${vues > 1 ? 'nent' : 't'} jamais vue${s(vues)} : leur planification est effacée.</li>
+          ${acquises > 0 ? `<li>${acquises} carte${s(acquises)} acquise${s(acquises)} perd${acquises > 1 ? 'ent' : ''} ce statut.</li>` : ''}
+          ${signalees > 0 ? `<li>${signalees} carte${s(signalees)} signalée${s(signalees)} ne l${signalees > 1 ? 'e sont' : '\'est'} plus.</li>` : ''}
+          <li>Elles reviennent comme des nouvelles cartes : ${rythme}.</li>
+          <li>Le paquet repart en section ${Planification.SECTIONS[sectionZero].nom} et passe en bas des listes, comme un paquet qui vient d'arriver.</li>
+          <li>Ce sera sa ${this.ordinal(numero)} réinitialisation ; le paquet en affichera le nombre.</li>
+        </ul>
+        <p><strong>Ce qui ne change pas</strong></p>
+        <ul class="liste-fenetre">
+          <li>Le contenu des cartes : tes ajouts, tes corrections, « ma formulation ».</li>
+          <li>Le cours, le nom, l'échéance.</li>
+          <li>Les cartes supprimées restent supprimées, les suspendues restent suspendues.</li>
+          <li>Les révisions déjà faites restent visibles dans le calendrier et sur chaque carte, marquées « avant la ${this.ordinal(numero)} réinitialisation ». Elles ne comptent plus pour la planification.</li>
+        </ul>
+        <button class="bouton danger large" data-confirmer-zero="1">Oui, repartir de zéro</button>
+        <button class="bouton secondaire large" data-fermer-fenetre="1">Annuler</button>`);
+      calque.querySelector('[data-confirmer-zero]').addEventListener('click', async e => {
+        e.currentTarget.disabled = true;   // un double clic ferait deux réinitialisations
+        await this.repartirDeZero(paquet.id);
+        this.fermerFenetre();
+        await this.rendre();
+      });
+    };
+
+    choix();
+  },
+
   // ---------- Écran : le cours d'un paquet ----------
 
   async ecranCours() {
@@ -775,7 +958,11 @@ const App = {
     const carte = await Donnees.lire('cartes', this.contexte.carteId);
     if (!carte) return this.retour();
     const paquet = await Donnees.lire('paquets', carte.paquetId);
-    const etapesCarte = Planification.parcours(await Donnees.revisionsDeLaCarte(carte.id), paquet, await Donnees.reglages());
+    const journal = await Donnees.revisionsDeLaCarte(carte.id);
+    const reglagesCarte = await Donnees.reglages();
+    const etapesCarte = Planification.parcours(journal, paquet, reglagesCarte);
+    // Si le paquet a été réinitialisé : les parcours d'avant, gardés comme historique.
+    const cyclesPasses = Planification.parcoursPasses(journal, paquet, reglagesCarte);
 
     let etatHtml = '<p class="doux">Jamais révisée.</p>';
     if (carte.etat) {
@@ -816,6 +1003,8 @@ const App = {
     </div>
 
     ${carte.etat ? this.blocParcours(etapesCarte, 'Parcours de cette carte') : ''}
+    ${cyclesPasses.slice().reverse().map(cycle =>
+      this.blocParcours(cycle.etapes, 'Avant la ' + this.ordinal(cycle.numero) + ' réinitialisation (ne compte plus)')).join('')}
 
     <div class="bloc">
       <button class="bouton large" data-enregistrer-carte="1">${carte.statut === 'brouillon' ? 'Valider cette carte (elle entrera en révision)' : 'Enregistrer'}</button>
@@ -877,8 +1066,8 @@ const App = {
     });
 
     this.brancher('[data-supprimer-carte]', 'click', async () => {
-      if (!confirm('Supprimer cette carte ?')) return;
-      await Donnees.supprimer('cartes', carte.id);
+      if (!confirm('Supprimer cette carte ? La suppression vaudra aussi pour l\'autre appareil, à la prochaine synchronisation.')) return;
+      await Donnees.supprimerCartes([carte.id]);
       await suivantOuRetour();
     });
   },
@@ -1138,8 +1327,15 @@ const App = {
 
     if (sangsues.length > 0) {
       html += `<div class="bloc">
-        <h2 class="orange">Cartes à réécrire (${sangsues.length})</h2>
-        <p class="doux">Au moins ${reglages.seuilSangsue} échecs. Découpe-les, ou reformule la question.</p>
+        <h2 class="orange">Cartes qui résistent (${sangsues.length})</h2>
+        <p class="doux">Au moins ${reglages.seuilSangsue} échecs. Causes possibles, à vérifier carte par carte :</p>
+        <ul class="doux">
+          <li>la carte demande deux choses à la fois → la découper ;</li>
+          <li>tu la confonds avec une autre → une carte « ne pas confondre » ;</li>
+          <li>la notion n'est pas comprise → relire le cours du paquet ;</li>
+          <li>il lui faut seulement plus de répétitions → rien à changer.</li>
+        </ul>
+        <p class="doux">Une carte sort de cette liste toute seule quand tu la réussis après au moins ${Planification.JOURS_POUR_LIBERER} jours sans l'avoir vue. Son compteur d'échecs repart alors de zéro.</p>
         ${sangsues.map(c => `<div class="ligne" data-ouvrir-carte="${c.id}" style="cursor:pointer">
           <div class="grandit">${this.h(this.extrait(c.question, 80))}</div>
           <span class="pastille alerte">${c.etat.echecs} échecs</span></div>`).join('')}
@@ -1282,6 +1478,8 @@ const App = {
 
       <label for="sangsue">Nombre d'échecs avant de signaler une carte</label>
       <input type="number" id="sangsue" min="2" max="20" value="${reglages.seuilSangsue}">
+      <p class="doux">Une carte signalée ne l'est plus quand tu la réussis après au moins ${Planification.JOURS_POUR_LIBERER} jours sans l'avoir vue.</p>
+      <p class="doux">Ces quatre réglages sont les mêmes sur tes deux appareils (synchronisation). Le nom de l'appareil, lui, est propre à chacun.</p>
 
       <label for="appareil">Nom de cet appareil</label>
       <input type="text" id="appareil" value="${this.h(reglages.nomAppareil)}" placeholder="PC ou Téléphone">
@@ -1308,7 +1506,8 @@ const App = {
       if (resultat.etat === 'ok') {
         zone.innerHTML = `<div class="bloc"><strong class="vert">Synchronisé.</strong>
           ${resultat.recu.revisions} révision(s) reçue(s) de l'autre appareil,
-          ${resultat.recu.cartes} carte(s), ${resultat.recu.paquets} paquet(s).
+          ${resultat.recu.cartes} carte(s), ${resultat.recu.paquets} paquet(s),
+          ${resultat.recu.suppressions} élément(s) supprimé(s)${resultat.recu.reglages ? ', réglages mis à jour' : ''}.
           Fichier envoyé : ${Math.round(resultat.taille / 1024)} Ko.
           ${resultat.alerteTaille ? '<br><strong class="orange">Le fichier devient gros : signale-le à Claude.</strong>' : ''}</div>`;
       } else if (resultat.etat === 'erreur') {
@@ -1386,7 +1585,8 @@ const App = {
         // Cet appareil est maintenant le plus complet des deux : on propose
         // tout de suite de renvoyer le résultat, sinon l'autre reste en retard.
         zone.innerHTML = `<div class="bloc">Fusion terminée : ${rapport.revisions} révision(s) ajoutée(s),
-          ${rapport.cartes} carte(s) mise(s) à jour, ${rapport.paquets} paquet(s), ${rapport.recalculees} carte(s) replanifiée(s).
+          ${rapport.cartes} carte(s) mise(s) à jour, ${rapport.paquets} paquet(s), ${rapport.suppressions} élément(s) supprimé(s),
+          ${rapport.recalculees} carte(s) replanifiée(s)${rapport.reglages ? ', réglages mis à jour' : ''}.
           <p class="doux">Cet appareil a maintenant tout l'historique des deux. L'autre, lui, ne connaît pas encore ce qui a été fait ici : renvoie-lui ce fichier pour qu'ils soient identiques.</p>
           <button class="bouton large" id="renvoyer-fusion">Exporter pour l'autre appareil</button></div>`;
         document.getElementById('renvoyer-fusion').addEventListener('click', async () => {
@@ -1399,13 +1599,26 @@ const App = {
     });
 
     this.brancher('[data-enregistrer-reglages]', 'click', async () => {
-      await Donnees.majReglages({
+      const avant = await Donnees.reglages();
+      const nouveaux = {
         nouvellesParJour: Number(document.getElementById('nouvelles').value),
         retentionCible: Number(document.getElementById('retention').value),
         intervalleMaxJours: Number(document.getElementById('plafond').value),
         seuilSangsue: Number(document.getElementById('sangsue').value),
         nomAppareil: document.getElementById('appareil').value.trim() || 'Appareil'
-      });
+      };
+      // La date sert à la synchronisation : les réglages partagés modifiés
+      // le plus récemment l'emportent sur l'autre appareil. Le tout premier
+      // enregistrement est daté même sans changement : c'est lui qui désigne
+      // les réglages de référence pour les deux appareils.
+      const partagesModifies = Donnees.REGLAGES_PARTAGES.some(champ => nouveaux[champ] !== avant[champ]);
+      if (partagesModifies || !avant.modifieLe) nouveaux.modifieLe = new Date().toISOString();
+      const reglagesEnregistres = await Donnees.majReglages(nouveaux);
+      // Rétention, plafond et seuil changent les dates ou le signalement de
+      // cartes déjà vues : on rejoue tous les journaux.
+      if (['retentionCible', 'intervalleMaxJours', 'seuilSangsue'].some(champ => nouveaux[champ] !== avant[champ])) {
+        await Planification.rafraichirTout(reglagesEnregistres);
+      }
       // Le nom de l'appareil sert aussi à signer les envois de synchronisation.
       if (Synchro.estConfigure()) {
         Synchro.enregistrerReglages({ nomAppareil: document.getElementById('appareil').value.trim() || 'Appareil' });

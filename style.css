@@ -224,6 +224,7 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 .pastille.section-apprendre { background: #fdeee0; color: var(--orange); }
 .pastille.section-comprendre { background: var(--accent-clair); color: var(--accent); }
 .pastille.section-entretenir { background: #e4f2ea; color: var(--vert); }
+.pastille.section-archive { background: #e9ecee; color: var(--texte-doux); }
 
 /* ---------- Écran de session ---------- */
 
@@ -322,13 +323,16 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 .parcours .etape.ratee { background: #fbe9e7; color: var(--rouge); }
 .parcours .fleche { color: var(--texte-doux); font-size: 13px; }
 
-/* ---------- Calendrier (page par-dessus) ---------- */
+/* ---------- Pages par-dessus (calendrier, réactivation) ---------- */
 
 .calque {
   position: fixed;
   inset: 0;
   z-index: 50;
   background: rgba(10, 25, 32, 0.55);
+  /* Ce qui est derrière est légèrement flouté. */
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -347,6 +351,10 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 }
 .entete-calque { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .entete-calque h2 { flex: 1; margin: 0; text-align: center; text-transform: capitalize; }
+/* Titre d'une fenêtre : une phrase, pas un nom de mois. */
+.entete-calque h2.titre-fenetre { text-align: left; text-transform: none; }
+.liste-fenetre { margin: 4px 0 12px; padding-left: 20px; }
+.liste-fenetre li { margin-bottom: 4px; }
 .nav-cal, .fermer-cal {
   border: 1px solid var(--bordure);
   background: var(--carte);

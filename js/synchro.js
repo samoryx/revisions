@@ -8,7 +8,8 @@
    3. Elle dépose le résultat dans un fichier d'un dépôt GitHub PRIVÉ,
       qui t'appartient.
    4. L'autre appareil le récupère, le déchiffre, et le fusionne avec
-      ce qu'il a déjà (les journaux de révisions s'additionnent).
+      ce qu'il a déjà (les journaux de révisions s'additionnent, les
+      suppressions notées d'un côté sont appliquées de l'autre).
 
    Ce que GitHub voit : un fichier de caractères incompréhensibles.
    Ce que personne d'autre ne voit : le dépôt est privé.
@@ -243,7 +244,7 @@ const Synchro = {
     try {
       for (let essai = 0; essai < 3; essai++) {
         const distant = await this.lireDistant();
-        let recu = { paquets: 0, cartes: 0, revisions: 0, recalculees: 0 };
+        let recu = { paquets: 0, cartes: 0, revisions: 0, suppressions: 0, reglages: false, recalculees: 0 };
         if (distant.enveloppe) {
           const sauvegarde = await this.dechiffrer(distant.enveloppe, this.reglages().phrase);
           recu = await Sauvegarde.fusionner(sauvegarde);

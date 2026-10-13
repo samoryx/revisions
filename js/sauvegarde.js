@@ -7,6 +7,10 @@
    sans conflit possible (une révision faite dans le bus le mardi et
    une autre sur le PC le mercredi sont deux lignes différentes).
    Après fusion, on rejoue les journaux et tout retombe en ordre.
+
+   Les suppressions voyagent aussi, sous forme d'un registre (voir
+   donnees.js) : sans lui, une addition ne peut que rajouter, et ce qui
+   a été supprimé d'un côté reviendrait de l'autre.
    =========================================================== */
 
 const Sauvegarde = {
@@ -24,7 +28,8 @@ const Sauvegarde = {
       paquets: await Donnees.tous('paquets'),
       cartes: await Donnees.tous('cartes'),
       revisions: await Donnees.tous('revisions'),
-      reglages: reglages
+      reglages: reglages,
+      suppressions: await Donnees.suppressions()
     };
   },
 
@@ -54,18 +59,36 @@ const Sauvegarde = {
     if (!donnees || donnees.format !== this.FORMAT) {
       throw new Error("Ce fichier n'est pas une sauvegarde de l'application.");
     }
-    const reglages = await Donnees.reglages();
-    const rapport = { paquets: 0, cartes: 0, revisions: 0, recalculees: 0 };
+    const rapport = { paquets: 0, cartes: 0, revisions: 0, suppressions: 0, reglages: false, recalculees: 0 };
+
+    // 0. Registre des suppressions : on additionne les deux registres.
+    //    Tout ce qui y figure est écarté de la suite, et effacé ici à l'étape 5.
+    const supprimes = await Donnees.suppressions();
+    let registreModifie = false;
+    Object.keys(donnees.suppressions || {}).forEach(function (id) {
+      if (!supprimes[id]) {
+        supprimes[id] = donnees.suppressions[id];
+        registreModifie = true;
+      }
+    });
+    if (registreModifie) await Donnees.ecrireSuppressions(supprimes);
+
+    // Les paquets dont il faudra recalculer les cartes.
+    const aRecalculer = {};
 
     // 1. Paquets : on garde la version modifiée le plus récemment.
     const paquetsLocaux = {};
     (await Donnees.tous('paquets')).forEach(function (p) { paquetsLocaux[p.id] = p; });
     const paquetsAEcrire = [];
     (donnees.paquets || []).forEach(function (paquet) {
+      if (supprimes[paquet.id]) return;
       const local = paquetsLocaux[paquet.id];
       if (!local || (paquet.modifieLe || '') > (local.modifieLe || '')) {
         paquetsAEcrire.push(paquet);
         paquetsLocaux[paquet.id] = paquet;
+        // Section, échéance, rétention ou remise à zéro ont pu changer :
+        // les dates de toutes ses cartes en dépendent.
+        aRecalculer[paquet.id] = true;
         rapport.paquets++;
       }
     });
@@ -76,10 +99,12 @@ const Sauvegarde = {
     (await Donnees.tous('cartes')).forEach(function (c) { cartesLocales[c.id] = c; });
     const cartesAEcrire = [];
     (donnees.cartes || []).forEach(function (carte) {
+      if (supprimes[carte.id]) return;
       const locale = cartesLocales[carte.id];
       if (!locale || (carte.modifieLe || '') > (locale.modifieLe || '')) {
         cartesAEcrire.push(carte);
         cartesLocales[carte.id] = carte;
+        aRecalculer[carte.paquetId] = true;
         rapport.cartes++;
       }
     });
@@ -89,24 +114,34 @@ const Sauvegarde = {
     const connues = {};
     (await Donnees.tous('revisions')).forEach(function (r) { connues[r.id] = true; });
     const revisionsAEcrire = [];
-    const cartesATraiter = {};
     (donnees.revisions || []).forEach(function (revision) {
-      if (!connues[revision.id]) {
-        revisionsAEcrire.push(revision);
-        cartesATraiter[revision.carteId] = true;
-        rapport.revisions++;
-      }
+      if (connues[revision.id] || supprimes[revision.carteId]) return;
+      revisionsAEcrire.push(revision);
+      const carte = cartesLocales[revision.carteId];
+      if (carte) aRecalculer[carte.paquetId] = true;
+      rapport.revisions++;
     });
     await Donnees.ecrirePlusieurs('revisions', revisionsAEcrire);
 
-    // 4. On rejoue le journal des cartes concernées.
-    const identifiants = Object.keys(cartesATraiter);
-    for (let i = 0; i < identifiants.length; i++) {
-      const carte = cartesLocales[identifiants[i]];
-      if (!carte) continue;
-      await Planification.rafraichirCarte(carte, paquetsLocaux[carte.paquetId], reglages);
-      rapport.recalculees++;
+    // 4. Réglages partagés : on garde ceux modifiés le plus récemment.
+    //    Le nom de l'appareil, lui, ne voyage pas.
+    let reglages = await Donnees.reglages();
+    const recus = donnees.reglages;
+    if (recus && recus.modifieLe && recus.modifieLe > (reglages.modifieLe || '')) {
+      const modifications = { modifieLe: recus.modifieLe };
+      Donnees.REGLAGES_PARTAGES.forEach(function (champ) {
+        if (recus[champ] !== undefined) modifications[champ] = recus[champ];
+      });
+      reglages = await Donnees.majReglages(modifications);
+      rapport.reglages = true;
     }
+
+    // 5. On efface ici ce que l'autre appareil a supprimé.
+    rapport.suppressions = await Donnees.appliquerSuppressions(supprimes);
+
+    // 6. On rejoue le journal des cartes concernées. Si les réglages ont
+    //    changé (rétention, plafond, seuil), toutes les cartes le sont.
+    rapport.recalculees = await Planification.rafraichirTout(reglages, rapport.reglages ? null : aRecalculer);
     return rapport;
   },
 
@@ -149,6 +184,7 @@ const Sauvegarde = {
         retentionCible: null,
         archive: false,
         creeLe: maintenant,
+        sectionDepuis: maintenant,
         modifieLe: maintenant
       };
       await Donnees.ecrire('paquets', paquet);

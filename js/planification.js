@@ -15,12 +15,22 @@
    - petit décalage aléatoire pour éviter que 40 cartes créées le
      même jour reviennent toutes ensemble pour toujours ;
    - une carte est "acquise" après 3 rappels réussis des jours
-     différents (critère du réapprentissage successif), pas après un seul.
+     différents (critère du réapprentissage successif), pas après un seul ;
+   - un paquet "réinitialisé" repart de zéro : seules comptent les
+     révisions faites après sa dernière réinitialisation (les autres
+     restent dans le journal, comme historique).
    =========================================================== */
 
 const Planification = {
 
   REUSSITES_POUR_ACQUISE: 3,
+
+  /* Une carte signalée (« elle résiste ») ne l'est plus quand elle est
+     réussie après au moins 7 jours sans avoir été vue. Pourquoi pas
+     simplement « 3 réussites » ? Après plusieurs échecs, ses intervalles
+     restent de 1 à 2 jours : 3 réussites peuvent tomber en 3 jours, ce qui
+     ne prouve rien. Tenir une semaine sans révision, si. */
+  JOURS_POUR_LIBERER: 7,
 
   // ---------- Les trois sections ----------
   //
@@ -59,6 +69,48 @@ const Planification = {
   sectionDe: function (paquet) {
     if (paquet && this.SECTIONS[paquet.section]) return paquet.section;
     return (paquet && paquet.echeance) ? 'apprendre' : 'comprendre';
+  },
+
+  /* Ce qu'on affiche à la place de la section. Un paquet archivé n'a plus
+     de section visible : l'app garde l'ancienne en mémoire uniquement pour
+     pouvoir la remettre (« Remettre comme avant »). */
+  nomSection: function (paquet) {
+    return paquet && paquet.archive ? 'Archivé' : this.SECTIONS[this.sectionDe(paquet)].nom;
+  },
+
+  // ---------- Ordre d'arrivée ----------
+  // Les modifications d'un paquet (nom, échéance, cours…) ne comptent pas
+  // comme une arrivée : seules la création, l'entrée dans une section et
+  // la remise à zéro en sont une.
+
+  // Arrivée dans l'app (liste « Paquets »).
+  arriveeDe: function (paquet) {
+    return paquet.arriveeLe || paquet.creeLe || '';
+  },
+
+  // Arrivée dans la section actuelle (accueil). Les paquets créés avant que
+  // cette date soit enregistrée prennent leur date d'arrivée dans l'app.
+  entreeDansSection: function (paquet) {
+    return paquet.sectionDepuis || this.arriveeDe(paquet);
+  },
+
+  // ---------- Réinitialisations ----------
+
+  // Début du cycle en cours : la dernière réinitialisation, ou rien.
+  debutDuCycle: function (paquet) {
+    const liste = (paquet && paquet.reinitialisations) || [];
+    return liste.length > 0 ? liste[liste.length - 1] : '';
+  },
+
+  /* Pour une révision faite à cette date : 0 si elle appartient au cycle en
+     cours, sinon le numéro de la réinitialisation qui l'a suivie
+     (1 = « avant la 1re réinitialisation »). */
+  reinitialisationApres: function (paquet, date) {
+    const liste = (paquet && paquet.reinitialisations) || [];
+    for (let i = 0; i < liste.length; i++) {
+      if (date < liste[i]) return i + 1;
+    }
+    return 0;
   },
 
   /* Une carte participe-t-elle aux révisions dans la section actuelle ?
@@ -167,15 +219,39 @@ const Planification = {
     return Math.max(1, Math.round(jours * (1 + variation)));
   },
 
-  /* Rejoue tout le journal d'une carte et renvoie son PARCOURS : une étape
+  /* Rejoue le journal d'une carte et renvoie son PARCOURS : une étape
      par révision qui a compté, avec l'intervalle qu'elle a produit.
      C'est la source unique — l'état de la carte en est simplement la
-     dernière étape, et l'affichage « 46 j → échec → 3 j » la parcourt. */
+     dernière étape, et l'affichage « 46 j → échec → 3 j » la parcourt.
+     Seules comptent les révisions du cycle en cours (depuis la dernière
+     réinitialisation du paquet). */
   parcours: function (revisions, paquet, reglages) {
+    const debut = this.debutDuCycle(paquet);
+    return this.rejouer(revisions.filter(r => !debut || r.date >= debut), paquet, reglages);
+  },
+
+  /* Les parcours des cycles PASSÉS, pour l'historique d'une carte :
+     [{ numero: 1, etapes }, …], numero = la réinitialisation qui a clos le cycle.
+     Chaque cycle est rejoué depuis zéro, comme il l'a été à l'époque. */
+  parcoursPasses: function (revisions, paquet, reglages) {
+    const liste = (paquet && paquet.reinitialisations) || [];
+    const cycles = [];
+    liste.forEach((fin, i) => {
+      const debut = i > 0 ? liste[i - 1] : '';
+      const duCycle = revisions.filter(r => r.date >= debut && r.date < fin);
+      const etapes = this.rejouer(duCycle, paquet, reglages);
+      if (etapes.length > 0) cycles.push({ numero: i + 1, etapes: etapes });
+    });
+    return cycles;
+  },
+
+  rejouer: function (revisions, paquet, reglages) {
     const etapes = [];
+    const seuil = (reglages && reglages.seuilSangsue) || 6;
     let memoire = null;          // { stabilite, difficulte }
     let dernierJour = null;
     let echecs = 0;
+    let echecsSignal = 0;        // les échecs qui comptent pour le signalement
     let reussitesDeSuite = 0;
 
     for (let i = 0; i < revisions.length; i++) {
@@ -196,9 +272,13 @@ const Planification = {
 
       if (revision.note === 1) {
         echecs++;
+        echecsSignal++;
         reussitesDeSuite = 0;
       } else {
         reussitesDeSuite++;
+        // Carte signalée, réussie après au moins 7 jours sans la voir : elle
+        // tient. Elle sort du signalement et son compteur repart de zéro.
+        if (echecsSignal >= seuil && joursEcoules >= this.JOURS_POUR_LIBERER) echecsSignal = 0;
       }
 
       const intervalle = this.calculerIntervalle(memoire.stabilite, jour, paquet, reglages, revision.id);
@@ -211,6 +291,7 @@ const Planification = {
         stabilite: memoire.stabilite,
         difficulte: memoire.difficulte,
         echecs: echecs,
+        echecsSignal: echecsSignal,
         reussitesDeSuite: reussitesDeSuite
       });
       dernierJour = jour;
@@ -230,6 +311,7 @@ const Planification = {
       dernierJour: derniere.jour,
       dernierIntervalle: derniere.intervalle,
       echecs: derniere.echecs,
+      echecsSignal: derniere.echecsSignal,
       reussitesDeSuite: derniere.reussitesDeSuite,
       nbRevisions: etapes.length,
       acquise: derniere.reussitesDeSuite >= this.REUSSITES_POUR_ACQUISE
@@ -262,8 +344,11 @@ const Planification = {
     return carte.etat.dueLe <= jour;
   },
 
+  // Signalée = au moins X échecs depuis le dernier retrait du signalement.
   estSangsue: function (carte, reglages) {
-    return !!(carte.etat && carte.etat.echecs >= reglages.seuilSangsue);
+    if (!carte.etat) return false;
+    const echecs = carte.etat.echecsSignal !== undefined ? carte.etat.echecsSignal : carte.etat.echecs;
+    return echecs >= reglages.seuilSangsue;
   },
 
   // Ordre d'introduction des nouvelles cartes : celui du cours.
@@ -351,11 +436,36 @@ const Planification = {
   },
 
   /* Recalcule toutes les cartes d'un paquet (après un changement de
-     section, de rétention ou d'échéance). */
+     section, de rétention ou d'échéance, ou une remise à zéro).
+     Le paquet doit déjà être enregistré. */
   rafraichirPaquet: async function (paquet, reglages) {
-    const cartes = (await Donnees.tous('cartes')).filter(c => c.paquetId === paquet.id && c.etat);
-    for (const carte of cartes) {
-      await this.rafraichirCarte(carte, paquet, reglages);
-    }
+    const seulement = {};
+    seulement[paquet.id] = true;
+    return this.rafraichirTout(reglages, seulement);
+  },
+
+  /* Recalcule les cartes de tous les paquets (ou seulement de ceux
+     indiqués), en une seule lecture du journal et une seule écriture.
+     N'écrit que les cartes dont l'état change. Renvoie leur nombre. */
+  rafraichirTout: async function (reglages, seulementCesPaquets) {
+    const parId = {};
+    (await Donnees.tous('paquets')).forEach(p => { parId[p.id] = p; });
+    const parCarte = {};
+    (await Donnees.tous('revisions')).forEach(r => {
+      if (!parCarte[r.carteId]) parCarte[r.carteId] = [];
+      parCarte[r.carteId].push(r);
+    });
+    const aEcrire = [];
+    (await Donnees.tous('cartes')).forEach(carte => {
+      if (seulementCesPaquets && !seulementCesPaquets[carte.paquetId]) return;
+      const journal = (parCarte[carte.id] || []).sort((a, b) => (a.date < b.date ? -1 : 1));
+      const etat = this.etatDepuisJournal(journal, parId[carte.paquetId], reglages);
+      if (JSON.stringify(etat) !== JSON.stringify(carte.etat || null)) {
+        carte.etat = etat;
+        aEcrire.push(carte);
+      }
+    });
+    await Donnees.ecrirePlusieurs('cartes', aEcrire);
+    return aEcrire.length;
   }
 };
