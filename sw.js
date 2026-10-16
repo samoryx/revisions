@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v15';  // v15 : suppressions synchronisées, réglages partagés, sortie du signalement, archivage et remise à zéro, tri par arrivée
+const VERSION = 'revisions-v16';  // v16 : la charge des 7 jours ne compte plus les paquets archivés (comme le calendrier)
 
 const FICHIERS = [
   './',

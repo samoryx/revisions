@@ -1255,8 +1255,12 @@ const App = {
     const revisions = await Donnees.tous('revisions');
     const actives = cartes.filter(c => c.statut === 'active');
     // La prévision ne compte que les cartes réellement en jeu : une carte
-    // « hors section » ne sera pas posée, elle n'a rien à faire dans la charge.
-    const enJeu = actives.filter(c => parId[c.paquetId] && Planification.carteEnJeu(c, parId[c.paquetId]));
+    // « hors section » ou d'un paquet archivé ne sera pas posée, elle n'a
+    // rien à faire dans la charge (même règle que le calendrier).
+    const enJeu = actives.filter(c => {
+      const p = parId[c.paquetId];
+      return p && !p.archive && Planification.carteEnJeu(c, p);
+    });
 
     // Prévision des 7 prochains jours, avec le détail par paquet.
     const prevision = [];
