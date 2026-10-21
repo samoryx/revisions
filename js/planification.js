@@ -345,6 +345,61 @@ const Planification = {
   },
 
   // Signalée = au moins X échecs depuis le dernier retrait du signalement.
+  /* Rang de chaque carte jamais vue d'un paquet dans la file d'entrée
+     (ordre du cours) : { identifiant: nombre de cartes qui passent avant elle }. */
+  rangsDesNouvelles: function (cartes, paquet) {
+    const rangs = {};
+    cartes
+      .filter(c => c.paquetId === paquet.id && !c.etat && this.carteEnJeu(c, paquet))
+      .sort(this.ordreDuCours)
+      .forEach((c, i) => { rangs[c.id] = i; });
+    return rangs;
+  },
+
+  /* Quand une carte passera-t-elle ? Renvoie { court, long } : « court »
+     pour une liste, « long » pour une phrase complète.
+     nouvelles (facultatif, pour une carte jamais vue) :
+     { aujourdhui: { id: true } (sélection du jour), rangs: rangsDesNouvelles(…) }.
+     Pour une carte jamais vue, on ne donne pas de date : elle dépend de la
+     limite de nouvelles cartes, partagée entre les paquets, et des jours où
+     l'app est ouverte. Le rang, lui, est exact. */
+  prochainPassage: function (carte, paquet, jour, nouvelles) {
+    if (carte.statut === 'brouillon') {
+      return { court: 'à valider', long: 'À valider : elle n\'entrera en révision qu\'après ta validation.' };
+    }
+    if (carte.statut === 'suspendue') {
+      return { court: 'suspendue', long: 'Suspendue : elle ne passera plus tant que tu ne la remets pas en révision.' };
+    }
+    if (paquet && paquet.archive) {
+      return { court: 'archivée', long: 'Paquet archivé : elle ne passera plus tant que tu ne réactives pas le paquet.' };
+    }
+    if (!this.carteEnJeu(carte, paquet)) {
+      const section = this.sectionDe(paquet);
+      const regle = section === 'entretenir'
+        ? 'seules les cartes essentielles passent'
+        : 'seules les cartes de compréhension et de méthode passent';
+      return { court: 'hors section', long: 'Hors section : en ' + this.SECTIONS[section].nom + ', ' + regle + '. Elle reviendra si le paquet change de section.' };
+    }
+    if (!carte.etat) {
+      if (nouvelles && nouvelles.aujourdhui[carte.id]) {
+        return { court: 'aujourd\'hui', long: 'Aujourd\'hui (nouvelle carte).' };
+      }
+      const avant = nouvelles && nouvelles.rangs[carte.id] !== undefined ? nouvelles.rangs[carte.id] : null;
+      if (avant === null) return { court: 'nouvelle', long: 'Nouvelle : elle entrera en révision selon ta limite de nouvelles cartes par jour.' };
+      if (avant === 0) return { court: 'nouvelle', long: 'Nouvelle : c\'est la prochaine de ce paquet à entrer en révision.' };
+      return { court: 'nouvelle', long: 'Nouvelle : ' + avant + ' carte' + (avant > 1 ? 's' : '') + ' de ce paquet passe' + (avant > 1 ? 'nt' : '') + ' avant elle (ordre du cours).' };
+    }
+    const ecart = this.differenceEnJours(jour, carte.etat.dueLe);
+    const date = new Date(carte.etat.dueLe + 'T00:00:00Z')
+      .toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+    if (ecart < 0) {
+      return { court: 'en retard', long: 'En retard de ' + (-ecart) + ' jour' + (ecart < -1 ? 's' : '') + ' : elle passe à ta prochaine session.' };
+    }
+    if (ecart === 0) return { court: 'aujourd\'hui', long: 'Aujourd\'hui.' };
+    if (ecart === 1) return { court: 'demain', long: 'Demain, ' + date + '.' };
+    return { court: this.jourLisible(carte.etat.dueLe), long: date.charAt(0).toUpperCase() + date.slice(1) + ' (dans ' + ecart + ' jours).' };
+  },
+
   estSangsue: function (carte, reglages) {
     if (!carte.etat) return false;
     const echecs = carte.etat.echecsSignal !== undefined ? carte.etat.echecsSignal : carte.etat.echecs;

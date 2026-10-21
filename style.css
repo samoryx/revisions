@@ -122,7 +122,7 @@ button {
 .bouton.large { display: block; width: 100%; text-align: center; margin-top: 8px; }
 .bouton:disabled { opacity: 0.45; cursor: default; }
 
-input[type="text"], input[type="date"], input[type="number"], textarea, select {
+input[type="text"], input[type="search"], input[type="date"], input[type="number"], textarea, select {
   font-family: inherit;
   font-size: 16px; /* 16px évite que le téléphone zoome automatiquement */
   width: 100%;
@@ -220,6 +220,40 @@ label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--texte-
 .segments button.actif { background: var(--accent); color: #fff; font-weight: 600; }
 
 .rangee-boutons { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Filtres de la liste des cartes : un seul actif, retour à la ligne sur téléphone. */
+.filtres { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.filtres button {
+  border: 1px solid var(--bordure);
+  background: var(--carte);
+  color: var(--texte);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.filtres button .nombre { color: var(--texte-doux); font-size: 12px; margin-left: 2px; }
+.filtres button.actif { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.filtres button.actif .nombre { color: #fff; }
+
+.pastille.aujourdhui { background: var(--accent); color: #fff; font-weight: 600; }
+.pastille { white-space: nowrap; }
+
+/* Prochain passage d'une carte (en haut de sa fiche). */
+.prochain-passage strong { display: block; margin-top: 2px; font-size: 17px; }
+.prochain-passage p { margin: 6px 0 0; }
+
+/* En session : quand reviendra la carte qu'on vient de noter. */
+.note-precedente {
+  font-size: 13px;
+  color: var(--texte-doux);
+  background: var(--carte);
+  border: 1px solid var(--bordure);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 0 0 10px;
+}
 
 .pastille.section-apprendre { background: #fdeee0; color: var(--orange); }
 .pastille.section-comprendre { background: var(--accent-clair); color: var(--accent); }

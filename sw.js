@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v16';  // v16 : la charge des 7 jours ne compte plus les paquets archivés (comme le calendrier)
+const VERSION = 'revisions-v17';  // v17 : recherche et filtres dans un paquet, prochain passage d'une carte
 
 const FICHIERS = [
   './',

@@ -531,29 +531,42 @@ const App = {
       <button class="bouton secondaire large" data-nouvelle-carte="1">Ajouter une carte</button>
     </div>`;
 
-    html += '<h2>Cartes</h2><div class="bloc">';
-    if (cartes.length === 0) {
-      html += '<p class="doux">Ce paquet est vide.</p>';
-    }
-    cartes
-      .slice()
-      .sort((a, b) => (a.statut === 'brouillon' ? -1 : 0) - (b.statut === 'brouillon' ? -1 : 0))
-      .forEach(carte => {
-        let etiquette = '';
-        if (carte.statut === 'brouillon') etiquette = '<span class="pastille alerte">à valider</span>';
-        else if (carte.statut === 'suspendue') etiquette = '<span class="pastille">suspendue</span>';
-        else if (!Planification.carteEnJeu(carte, paquet)) etiquette = '<span class="pastille">hors section</span>';
-        else if (carte.etat && carte.etat.acquise) etiquette = '<span class="pastille ok">acquise</span>';
-        else if (carte.etat) etiquette = `<span class="pastille">${Planification.jourLisible(carte.etat.dueLe)}</span>`;
-        else etiquette = '<span class="pastille">nouvelle</span>';
-        html += `<div class="ligne" data-ouvrir-carte="${carte.id}" style="cursor:pointer">
-          <div class="grandit">
-            <div>${this.h(this.extrait(carte.question, 90))}</div>
-            <div class="doux">${carte.type === 'explique' ? 'Explique' : 'Rappel'}${carte.etat ? ' · ' + carte.etat.echecs + ' échec(s)' : ''}</div>
-          </div>${etiquette}
-        </div>`;
-      });
-    html += '</div>';
+    // ---- Liste des cartes : ordre du cours, recherche et filtres ----
+    // La recherche et le filtre sont gardés dans le contexte de l'écran :
+    // en revenant d'une carte, on retrouve la même liste.
+    const reglages = await Donnees.reglages();
+    const toutesLesCartes = await Donnees.tous('cartes');
+    const selection = Planification.selectionDuJour(toutesLesCartes, await Donnees.tous('paquets'), reglages, jour, null);
+    const nouvelles = { aujourdhui: {}, rangs: Planification.rangsDesNouvelles(cartes, paquet) };
+    selection.nouvelles.forEach(c => { nouvelles.aujourdhui[c.id] = true; });
+
+    const enJeuCarte = c => c.statut === 'active' && Planification.carteEnJeu(c, paquet);
+    const filtres = [
+      { cle: 'toutes', nom: 'Toutes', garde: () => true },
+      { cle: 'valider', nom: 'À valider', garde: c => c.statut === 'brouillon' },
+      { cle: 'aujourdhui', nom: 'À revoir aujourd\'hui', garde: c => !paquet.archive && enJeuCarte(c) && Planification.estDue(c, jour) },
+      { cle: 'nouvelles', nom: 'Nouvelles', garde: c => enJeuCarte(c) && !c.etat },
+      { cle: 'resistent', nom: 'Qui résistent', garde: c => c.statut === 'active' && Planification.estSangsue(c, reglages) },
+      { cle: 'acquises', nom: 'Acquises', garde: c => c.statut === 'active' && c.etat && c.etat.acquise },
+      { cle: 'hors', nom: 'Hors section', garde: c => c.statut === 'active' && !Planification.carteEnJeu(c, paquet) },
+      { cle: 'suspendues', nom: 'Suspendues', garde: c => c.statut === 'suspendue' }
+    ];
+    if (!filtres.some(f => f.cle === this.contexte.filtre)) this.contexte.filtre = 'toutes';
+    const recherche = this.contexte.recherche || '';
+    const dansLOrdre = cartes.slice().sort(Planification.ordreDuCours);
+    const comptes = {};
+    filtres.forEach(f => { comptes[f.cle] = cartes.filter(f.garde).length; });
+
+    html += `<h2>Cartes</h2><div class="bloc">
+      ${cartes.length === 0 ? '<p class="doux">Ce paquet est vide.</p>' : `
+        <input type="search" id="recherche-cartes" value="${this.h(recherche)}" placeholder="Chercher dans les cartes" autocomplete="off">
+        <div class="filtres">
+          ${filtres.filter(f => f.cle === 'toutes' || comptes[f.cle] > 0 || f.cle === this.contexte.filtre).map(f =>
+            `<button data-filtre="${f.cle}" class="${f.cle === this.contexte.filtre ? 'actif' : ''}">${f.nom} <span class="nombre">${comptes[f.cle]}</span></button>`).join('')}
+        </div>
+        <p class="doux" id="nombre-resultats"></p>
+        <div id="liste-cartes"></div>`}
+    </div>`;
 
     html += `<div class="bloc">
       <button class="bouton danger large" data-supprimer-paquet="1">Supprimer ce paquet et ses cartes</button>
@@ -599,7 +612,42 @@ const App = {
       await this.rendre();
     });
 
-    this.brancher('[data-ouvrir-carte]', 'click', e => this.aller('carte', { carteId: e.currentTarget.dataset.ouvrirCarte }));
+    // La liste se refait à chaque lettre tapée ou filtre choisi, sans
+    // redessiner tout l'écran (la barre de recherche garde le curseur).
+    const afficherListe = () => {
+      const zone = document.getElementById('liste-cartes');
+      if (!zone) return;
+      const filtre = filtres.find(f => f.cle === this.contexte.filtre);
+      const mots = this.sansAccents(this.contexte.recherche || '').split(/\s+/).filter(Boolean);
+      const trouvees = dansLOrdre.filter(c => {
+        if (!filtre.garde(c)) return false;
+        if (mots.length === 0) return true;
+        const texte = this.sansAccents([c.question, c.reponse, c.maFormulation]
+          .concat(c.elementsCles || [], c.exemples || []).join(' '));
+        return mots.every(mot => texte.includes(mot));   // tous les mots tapés doivent y être
+      });
+      document.getElementById('nombre-resultats').textContent =
+        trouvees.length + ' carte' + (trouvees.length > 1 ? 's' : '') + (mots.length > 0 || filtre.cle !== 'toutes' ? ' sur ' + cartes.length : '');
+      zone.innerHTML = trouvees.length === 0
+        ? '<p class="doux">Aucune carte ne correspond.</p>'
+        : trouvees.map(carte => this.ligneCarte(carte, paquet, jour, nouvelles, reglages)).join('');
+      zone.querySelectorAll('[data-ouvrir-carte]').forEach(ligne => ligne.addEventListener('click', () =>
+        this.aller('carte', { carteId: ligne.dataset.ouvrirCarte })));
+    };
+    afficherListe();
+
+    const champ = document.getElementById('recherche-cartes');
+    if (champ) {
+      champ.addEventListener('input', () => {
+        this.contexte.recherche = champ.value;
+        afficherListe();
+      });
+    }
+    document.querySelectorAll('[data-filtre]').forEach(bouton => bouton.addEventListener('click', () => {
+      this.contexte.filtre = bouton.dataset.filtre;
+      document.querySelectorAll('[data-filtre]').forEach(b => b.classList.toggle('actif', b === bouton));
+      afficherListe();
+    }));
 
     this.brancher('[data-nouvelle-carte]', 'click', async () => {
       const maintenant = new Date().toISOString();
@@ -947,6 +995,31 @@ const App = {
     }).join('');
   },
 
+  // Pour chercher sans se soucier des majuscules ni des accents : « reaction » trouve « Réaction ».
+  sansAccents(texte) {
+    return String(texte || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  },
+
+  /* Une ligne de la liste des cartes d'un paquet : la question, ce qu'on sait
+     de la carte, et à droite son prochain passage. */
+  ligneCarte(carte, paquet, jour, nouvelles, reglages) {
+    const passage = Planification.prochainPassage(carte, paquet, jour, nouvelles);
+    const classe = carte.statut === 'brouillon' ? 'pastille alerte'
+      : passage.court === 'en retard' || passage.court === 'aujourd\'hui' ? 'pastille aujourdhui'
+      : 'pastille';
+    const details = [carte.type === 'explique' ? 'Explique' : 'Rappel'];
+    if (carte.etat) details.push(carte.etat.echecs + ' échec' + (carte.etat.echecs > 1 ? 's' : ''));
+    if (carte.statut === 'active' && carte.etat && carte.etat.acquise) details.push('<span class="vert">acquise</span>');
+    if (carte.statut === 'active' && Planification.estSangsue(carte, reglages)) details.push('<span class="orange">résiste</span>');
+    return `<div class="ligne" data-ouvrir-carte="${carte.id}" style="cursor:pointer">
+      <div class="grandit">
+        <div>${this.h(this.extrait(carte.question, 90))}</div>
+        <div class="doux">${details.join(' · ')}</div>
+      </div>
+      <span class="${classe}" title="${this.h(passage.long)}">${this.h(passage.court)}</span>
+    </div>`;
+  },
+
   extrait(texte, longueur) {
     const propre = String(texte || '').replace(/\s+/g, ' ').trim();
     return propre.length > longueur ? propre.slice(0, longueur) + '…' : (propre || '(carte vide)');
@@ -966,12 +1039,32 @@ const App = {
 
     let etatHtml = '<p class="doux">Jamais révisée.</p>';
     if (carte.etat) {
-      etatHtml = `<p class="doux">Prochaine révision : ${Planification.jourLisible(carte.etat.dueLe)} ·
-        ${carte.etat.nbRevisions} révision(s) · ${carte.etat.echecs} échec(s) ·
+      etatHtml = `<p class="doux">${carte.etat.nbRevisions} révision(s) · ${carte.etat.echecs} échec(s) ·
         stabilité ${carte.etat.stabilite.toFixed(1)} j · difficulté ${carte.etat.difficulte.toFixed(1)}/10</p>`;
     }
 
+    // Prochain passage. Pour une carte jamais vue, il faut savoir si elle fait
+    // partie des nouvelles du jour, et combien de cartes passent avant elle.
+    const jour = Planification.jourAujourdhui();
+    let nouvelles = null;
+    if (!carte.etat && paquet) {
+      const toutes = await Donnees.tous('cartes');
+      const selection = Planification.selectionDuJour(toutes, await Donnees.tous('paquets'), reglagesCarte, jour, null);
+      nouvelles = { aujourdhui: {}, rangs: Planification.rangsDesNouvelles(toutes, paquet) };
+      selection.nouvelles.forEach(c => { nouvelles.aujourdhui[c.id] = true; });
+    }
+    const passage = Planification.prochainPassage(carte, paquet, jour, nouvelles);
+    // La remarque « prévision » ne vaut que pour une date à venir.
+    const datee = carte.etat && carte.etat.dueLe > jour && carte.statut === 'active'
+      && paquet && !paquet.archive && Planification.carteEnJeu(carte, paquet);
+    const passageHtml = `<div class="bloc prochain-passage">
+      <div class="doux">Prochain passage</div>
+      <strong>${this.h(passage.long)}</strong>
+      ${datee ? '<p class="doux">C\'est une prévision : chaque révision la déplace. Si tu n\'ouvres pas l\'app ce jour-là, la carte passe à ta session suivante.</p>' : ''}
+    </div>`;
+
     const html = `
+    ${passageHtml}
     <div class="bloc">
       <label for="type-carte">Type de carte</label>
       <select id="type-carte">
@@ -1085,6 +1178,7 @@ const App = {
     this.confianceChoisie = null;
     this.elementsCoches = [];
     this.synchroFinFaite = false;
+    this.derniereNote = null;
     await this.aller('session', {}, true);
   },
 
@@ -1103,6 +1197,7 @@ const App = {
         <h2>Terminé</h2>
         <p>${c.vues} réponses · ${taux} % de réussite · ${c.ratees} échec(s)</p>
         <p class="doux">Tout est déjà enregistré. Les cartes ratées reviendront demain.</p>
+        ${this.derniereNote ? `<p class="doux">${this.h(this.derniereNote)}</p>` : ''}
         <button class="bouton large" data-va="accueil">Retour à l'accueil</button>
       </div>`);
       this.brancher('[data-va]', 'click', () => this.aller('accueil', {}, true));
@@ -1118,6 +1213,7 @@ const App = {
 
     if (this.phaseSession === 'question') {
       this.afficher('Révision', entete + `
+        ${this.derniereNote ? `<p class="note-precedente">${this.h(this.derniereNote)}</p>` : ''}
         <div id="zone-question"><div class="question">${this.h(carte.question)}</div></div>
         <div id="zone-reponse">
           ${carte.surPapier
@@ -1229,12 +1325,18 @@ const App = {
     });
 
     this.brancher('[data-note]', 'click', async e => {
+      const note = Number(e.currentTarget.dataset.note);
       await Session.enregistrer({
-        note: Number(e.currentTarget.dataset.note),
+        note: note,
         confiance: this.confianceChoisie,
         reponseTapee: this.brouillonReponse,
         elementsCoches: this.elementsCoches.slice()
       });
+      // L'app passe tout de suite à la carte suivante : c'est là qu'on
+      // affiche quand reviendra celle-ci (sa date vient d'être recalculée).
+      const passage = Planification.prochainPassage(carte, paquet, Planification.jourAujourdhui()).long;
+      this.derniereNote = 'Carte précédente — ' + (note === 1 ? 'elle revient plus loin dans cette session. Ensuite : ' : 'prochain passage : ')
+        + passage.charAt(0).toLowerCase() + passage.slice(1);
       this.brouillonReponse = '';
       this.confianceChoisie = null;
       this.elementsCoches = [];
