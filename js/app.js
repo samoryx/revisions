@@ -1486,16 +1486,40 @@ const App = {
     </div>`;
     this.afficher('Importer', html);
 
+    // Un fichier qui supprime demande ton accord, liste à l'appui.
+    // Annuler = rien n'est importé du tout.
+    const confirmerSuppressions = async liste => {
+      const morceaux = [];
+      if (liste.cartes.length > 0) morceaux.push(liste.cartes.length + ' carte(s) :\n' + liste.cartes.map(q => '- ' + q).join('\n'));
+      if (liste.cours.length > 0) morceaux.push(liste.cours.length + ' partie(s) de cours :\n' + liste.cours.map(t => '- ' + t).join('\n'));
+      return confirm('Ce fichier supprime définitivement :\n\n' + morceaux.join('\n\n') +
+        '\n\nLes révisions de ces cartes seront perdues, ici et sur l\'autre appareil à la prochaine synchronisation.' +
+        '\nOK = importer et supprimer. Annuler = rien n\'est importé.');
+    };
+
     const traiter = async (donnees) => {
       const zone = document.getElementById('resultat-import');
       try {
-        const rapport = await Sauvegarde.importerCartes(donnees);
+        const rapport = await Sauvegarde.importerCartes(donnees, confirmerSuppressions);
+        const lignes = [
+          rapport.misesAJour > 0 ? rapport.misesAJour + ' déjà présente(s), marquage complété.' : '',
+          rapport.cartesRemplacees > 0 ? rapport.cartesRemplacees + ' carte(s) modifiée(s), historique gardé : à relire.' : '',
+          rapport.cartesPlacees > 0 ? rapport.cartesPlacees + ' carte(s) placée(s) dans l\'ordre du cours.' : '',
+          rapport.cartesSupprimees > 0 ? rapport.cartesSupprimees + ' carte(s) supprimée(s).' : '',
+          rapport.coursAjoutees > 0 ? rapport.coursAjoutees + ' partie(s) de cours ajoutée(s).' : '',
+          rapport.coursRemplacees > 0 ? rapport.coursRemplacees + ' partie(s) de cours mise(s) à jour' +
+            (rapport.coursRenommees > 0 ? ' (dont ' + rapport.coursRenommees + ' renommée(s))' : '') + '.' : '',
+          rapport.coursDeplacees > 0 ? rapport.coursDeplacees + ' partie(s) de cours déplacée(s).' : '',
+          rapport.coursSupprimees > 0 ? rapport.coursSupprimees + ' partie(s) de cours supprimée(s).' : '',
+          rapport.ignorees > 0 ? rapport.ignorees + ' déjà présente(s), ignorée(s).' : ''
+        ].filter(Boolean);
+        const signalements = rapport.signalements.length === 0 ? '' :
+          `<div class="avertissement"><strong>À signaler à Claude :</strong>
+            <ul>${rapport.signalements.map(s => '<li>' + this.h(s) + '</li>').join('')}</ul></div>`;
         zone.innerHTML = `<div class="bloc"><strong>${rapport.ajoutees} carte(s) importée(s)</strong>
-          dans « ${this.h(rapport.paquet.nom) }»${rapport.paquetCree ? ' (paquet créé)' : ''}.
-          ${rapport.misesAJour > 0 ? rapport.misesAJour + ' déjà présente(s), marquage complété.' : ''}
-          ${rapport.coursAjoutees > 0 ? rapport.coursAjoutees + ' partie(s) de cours ajoutée(s).' : ''}
-          ${rapport.coursRemplacees > 0 ? rapport.coursRemplacees + ' partie(s) de cours mise(s) à jour.' : ''}
-          ${rapport.ignorees > 0 ? rapport.ignorees + ' déjà présente(s), ignorée(s).' : ''}
+          dans « ${this.h(rapport.paquet.nom)} »${rapport.paquetCree ? ' (paquet créé)' : ''}.
+          ${lignes.join(' ')}
+          ${signalements}
           <button class="bouton large" data-valider-brouillons="1">Relire les brouillons maintenant</button></div>`;
         this.brancher('[data-valider-brouillons]', 'click', () => this.ouvrirBrouillons());
       } catch (erreur) {

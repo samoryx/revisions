@@ -10,7 +10,7 @@
    le navigateur remplace alors l'ancienne copie.
    =========================================================== */
 
-const VERSION = 'revisions-v17';  // v17 : recherche et filtres dans un paquet, prochain passage d'une carte
+const VERSION = 'revisions-v18';  // v18 : fichiers de cartes qui placent, modifient ou suppriment (format cartes-v2)
 
 const FICHIERS = [
   './',

@@ -407,7 +407,14 @@ const Planification = {
   },
 
   // Ordre d'introduction des nouvelles cartes : celui du cours.
+  // Depuis la v18, une carte placée par un fichier (« avant ») porte un rang :
+  // les cartes qui en ont un passent d'abord, dans l'ordre de leur rang ; les
+  // autres ensuite, comme avant (date d'import, puis place dans le fichier).
   ordreDuCours: function (a, b) {
+    const rangA = typeof a.rang === 'number';
+    const rangB = typeof b.rang === 'number';
+    if (rangA && rangB) return a.rang - b.rang;
+    if (rangA !== rangB) return rangA ? -1 : 1;
     if ((a.creeLe || '') !== (b.creeLe || '')) return (a.creeLe || '') < (b.creeLe || '') ? -1 : 1;
     return (a.ordre || 0) - (b.ordre || 0);
   },
